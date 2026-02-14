@@ -11,10 +11,8 @@ import { motion } from "framer-motion";
 
 export default function StatsCards({ orders = [] }) {
   const stats = {
-    total: orders.filter(o => o.current_status !== 'COMPLETED').length,
-    urgent: orders.filter(o => o.priority === 'URGENT' && o.current_status !== 'COMPLETED').length,
-    maintenance: orders.filter(o => o.current_status === 'MAINTENANCE').length,
-    completed: orders.filter(o => o.current_status === 'COMPLETED').length
+    total: orders.filter(o => o.currentStatus !== 'COMPLETED').length,
+    urgent: orders.filter(o => o.priority === 'URGENT' && o.currentStatus !== 'COMPLETED').length,
   };
 
   const cards = [
@@ -31,25 +29,11 @@ export default function StatsCards({ orders = [] }) {
       icon: AlertTriangle,
       gradient: "from-red-500 to-red-600",
       bgLight: "bg-red-50"
-    },
-    {
-      title: "Em Manutenção",
-      value: stats.maintenance,
-      icon: Wrench,
-      gradient: "from-purple-500 to-purple-600",
-      bgLight: "bg-purple-50"
-    },
-    {
-      title: "Concluídas",
-      value: stats.completed,
-      icon: CheckCircle2,
-      gradient: "from-green-500 to-green-600",
-      bgLight: "bg-green-50"
     }
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
       {cards.map((card, index) => (
         <motion.div
           key={card.title}
