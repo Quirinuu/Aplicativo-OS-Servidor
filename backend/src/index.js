@@ -1,18 +1,13 @@
-// BACKEND MODIFICADO PARA REDE LOCAL
+// BACKEND MODIFICADO - Resolve porta em uso automaticamente
 // backend/src/index.js
+
+const net = require('net');
 
 // ============== CONFIGURAÇÃO DE AMBIENTE ==============
 if (process.env.NODE_ENV !== 'production') {
   console.log('🔧 Modo desenvolvimento - carregando .env');
   require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 }
-
-// LOG DE CONFIGURAÇÃO INICIAL
-console.log('🔍 Configuração do Ambiente:');
-console.log('   NODE_ENV:', process.env.NODE_ENV || 'development');
-console.log('   PORT:', process.env.PORT || '3001 (padrão)');
-console.log('   DATABASE_URL:', process.env.DATABASE_URL || 'Não definido');
-console.log('   Diretório atual:', __dirname);
 
 // Função para obter IP local da máquina
 function getLocalIpAddress() {
@@ -21,7 +16,6 @@ function getLocalIpAddress() {
   
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // Pular endereços internos (lo) e não-IPv4
       if (iface.family === 'IPv4' && !iface.internal) {
         console.log(`🌐 IP Local detectado: ${iface.address} (interface: ${name})`);
         return iface.address;
@@ -32,17 +26,65 @@ function getLocalIpAddress() {
   return 'localhost';
 }
 
+// Função para verificar se porta está disponível
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        resolve(false);
+      } else {
+        resolve(false);
+      }
+    });
+    
+    server.once('listening', () => {
+      server.close();
+      resolve(true);
+    });
+    
+    server.listen(port, '0.0.0.0');
+  });
+}
+
+// Função para encontrar porta disponível
+async function findAvailablePort() {
+  const ports = [5000, 5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008, 5009];
+  
+  for (const port of ports) {
+    const available = await isPortAvailable(port);
+    if (available) {
+      console.log(`✅ Porta ${port} disponível`);
+      return port;
+    }
+    console.log(`⏭️  Porta ${port} ocupada, tentando próxima...`);
+  }
+  
+  // Se nenhuma porta da lista estiver disponível, usar porta aleatória
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(0, '0.0.0.0', () => {
+      const port = server.address().port;
+      server.close();
+      console.log(`🔍 Usando porta aleatória: ${port}`);
+      resolve(port);
+    });
+  });
+}
+
 const LOCAL_IP = getLocalIpAddress();
 
 process.on('uncaughtException', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`❌ Porta ${process.env.PORT || 3001} já está em uso!`);
-    console.error('   Tentando outra porta automaticamente...');
+    console.error(`❌ Porta já está em uso!`);
+    console.error('   Sistema tentará outra porta automaticamente...');
   } else {
     console.error('💥 Erro não tratado:', err);
   }
 });
 
+// Verificar módulos
 try {
   require('cors');
   console.log('✅ cors carregado');
@@ -76,7 +118,6 @@ app.use(express.static(frontendPath));
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   
-  // Permitir localhost e IPs da rede local (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
   const isLocalNetwork = origin && (
     origin.includes('localhost') ||
     origin.includes('127.0.0.1') ||
@@ -93,7 +134,6 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -103,7 +143,7 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Log de todas as requisições com IP
+// Log de requisições
 app.use((req, res, next) => {
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   console.log(`📡 ${req.method} ${req.path} - Cliente: ${clientIp}`);
@@ -114,10 +154,8 @@ app.use((req, res, next) => {
 const io = new Server(server, {
   cors: {
     origin: function (origin, callback) {
-      // Permitir requisições sem origin (Electron, mobile apps, etc)
       if (!origin) return callback(null, true);
       
-      // Permitir localhost e rede local
       const isLocalNetwork = 
         origin.includes('localhost') ||
         origin.includes('127.0.0.1') ||
@@ -136,10 +174,9 @@ const io = new Server(server, {
   }
 });
 
-// Exportar io para uso nos controllers
 module.exports = { io };
 
-// Dados mock em memória (compartilhados entre todas as conexões)
+// Dados mock em memória
 let mockUsers = [
   {
     id: 1,
@@ -159,25 +196,9 @@ let mockUsers = [
   }
 ];
 
-let mockOrders = [
-  {
-    id: 1,
-    clientName: "Maria Silva",
-    clientPhone: "(11) 98765-4321",
-    equipmentName: "Notebook Dell",
-    equipmentSerial: "DL123456",
-    defect: "Não liga",
-    status: "pending",
-    priority: "high",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    assignedToId: 2,
-    createdById: 1,
-    comments: []
-  }
-];
+let mockOrders = [];
 
-// Middleware simples de autenticação
+// Middleware de autenticação
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   
@@ -185,7 +206,7 @@ function authMiddleware(req, res, next) {
     return res.status(401).json({ error: 'Não autorizado' });
   }
   
-  req.userId = 1; // Simula usuário logado
+  req.userId = 1;
   next();
 }
 
@@ -214,8 +235,6 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 app.get("/api/auth/me", authMiddleware, (req, res) => {
-  console.log("👤 Obtendo usuário atual");
-  
   const user = mockUsers.find(u => u.id === req.userId);
   
   if (!user) {
@@ -232,13 +251,8 @@ app.get("/api/auth/me", authMiddleware, (req, res) => {
 // ============== ROTAS DE USUÁRIOS ==============
 
 app.get("/api/users", authMiddleware, (req, res) => {
-  console.log("👥 Listando usuários");
-  
   const usersWithoutPassword = mockUsers.map(({ password, ...user }) => user);
-  
-  res.json({
-    users: usersWithoutPassword
-  });
+  res.json({ users: usersWithoutPassword });
 });
 
 app.get("/api/users/:id", authMiddleware, (req, res) => {
@@ -250,10 +264,7 @@ app.get("/api/users/:id", authMiddleware, (req, res) => {
   }
   
   const { password: _, ...userWithoutPassword } = user;
-  
-  res.json({
-    user: userWithoutPassword
-  });
+  res.json({ user: userWithoutPassword });
 });
 
 app.post("/api/users", authMiddleware, (req, res) => {
@@ -269,14 +280,9 @@ app.post("/api/users", authMiddleware, (req, res) => {
   };
   
   mockUsers.push(newUser);
-  
   const { password: _, ...userWithoutPassword } = newUser;
   
-  console.log("✅ Usuário criado:", username);
-  
-  res.json({
-    user: userWithoutPassword
-  });
+  res.json({ user: userWithoutPassword });
 });
 
 app.put("/api/users/:id", authMiddleware, (req, res) => {
@@ -294,12 +300,7 @@ app.put("/api/users/:id", authMiddleware, (req, res) => {
   };
   
   const { password: _, ...userWithoutPassword } = mockUsers[userIndex];
-  
-  console.log("✏️ Usuário atualizado:", userId);
-  
-  res.json({
-    user: userWithoutPassword
-  });
+  res.json({ user: userWithoutPassword });
 });
 
 app.delete("/api/users/:id", authMiddleware, (req, res) => {
@@ -311,19 +312,12 @@ app.delete("/api/users/:id", authMiddleware, (req, res) => {
   }
   
   mockUsers.splice(userIndex, 1);
-  
-  console.log("🗑️ Usuário deletado:", userId);
-  
-  res.json({
-    message: "Usuário deletado com sucesso"
-  });
+  res.json({ message: "Usuário deletado com sucesso" });
 });
 
 // ============== ROTAS DE ORDENS DE SERVIÇO ==============
 
 app.get("/api/os", authMiddleware, (req, res) => {
-  console.log("📋 Listando OS");
-  
   let filtered = [...mockOrders];
   
   if (req.query.status && req.query.status !== 'all') {
@@ -346,14 +340,10 @@ app.get("/api/os", authMiddleware, (req, res) => {
     );
   }
   
-  res.json({
-    orders: filtered
-  });
+  res.json({ orders: filtered });
 });
 
 app.get("/api/os/history", authMiddleware, (req, res) => {
-  console.log("📜 Obtendo histórico");
-  
   let filtered = mockOrders.filter(o => 
     o.status === 'completed' || o.status === 'cancelled'
   );
@@ -370,9 +360,7 @@ app.get("/api/os/history", authMiddleware, (req, res) => {
     );
   }
   
-  res.json({
-    orders: filtered
-  });
+  res.json({ orders: filtered });
 });
 
 app.get("/api/os/:id", authMiddleware, (req, res) => {
@@ -383,9 +371,7 @@ app.get("/api/os/:id", authMiddleware, (req, res) => {
     return res.status(404).json({ error: "OS não encontrada" });
   }
   
-  res.json({
-    order
-  });
+  res.json({ order });
 });
 
 app.post("/api/os", authMiddleware, (req, res) => {
@@ -402,13 +388,11 @@ app.post("/api/os", authMiddleware, (req, res) => {
   
   console.log("✅ OS criada:", newOrder.id);
   
-  // Emitir evento via WebSocket para TODOS os clientes
+  // Emitir evento via WebSocket para TODOS
   io.emit('os:created', { order: newOrder });
-  console.log("📡 Evento 'os:created' emitido para todos os clientes");
+  console.log("📡 Evento 'os:created' emitido");
   
-  res.json({
-    order: newOrder
-  });
+  res.json({ order: newOrder });
 });
 
 app.put("/api/os/:id", authMiddleware, (req, res) => {
@@ -428,13 +412,11 @@ app.put("/api/os/:id", authMiddleware, (req, res) => {
   
   console.log("✏️ OS atualizada:", osId);
   
-  // Emitir evento via WebSocket para TODOS os clientes
+  // Emitir evento via WebSocket
   io.emit('os:updated', { order: mockOrders[orderIndex] });
-  console.log("📡 Evento 'os:updated' emitido para todos os clientes");
+  console.log("📡 Evento 'os:updated' emitido");
   
-  res.json({
-    order: mockOrders[orderIndex]
-  });
+  res.json({ order: mockOrders[orderIndex] });
 });
 
 app.delete("/api/os/:id", authMiddleware, (req, res) => {
@@ -449,13 +431,11 @@ app.delete("/api/os/:id", authMiddleware, (req, res) => {
   
   console.log("🗑️ OS deletada:", osId);
   
-  // Emitir evento via WebSocket para TODOS os clientes
+  // Emitir evento via WebSocket
   io.emit('os:deleted', { orderId: osId });
-  console.log("📡 Evento 'os:deleted' emitido para todos os clientes");
+  console.log("📡 Evento 'os:deleted' emitido");
   
-  res.json({
-    message: "OS deletada com sucesso"
-  });
+  res.json({ message: "OS deletada com sucesso" });
 });
 
 app.post("/api/os/:id/comments", authMiddleware, (req, res) => {
@@ -477,22 +457,17 @@ app.post("/api/os/:id/comments", authMiddleware, (req, res) => {
   order.comments.push(newComment);
   order.updatedAt = new Date().toISOString();
   
-  console.log("💬 Comentário adicionado à OS:", osId);
-  
-  // Emitir evento via WebSocket para TODOS os clientes
+  // Emitir evento via WebSocket
   io.emit('os:comment', { osId, comment: newComment });
-  console.log("📡 Evento 'os:comment' emitido para todos os clientes");
   
-  res.json({
-    comment: newComment
-  });
+  res.json({ comment: newComment });
 });
 
-// Rota para obter informações de rede (útil para debug)
+// Rota de info de rede
 app.get("/api/network/info", (req, res) => {
   res.json({
     serverIp: LOCAL_IP,
-    port: PORT,
+    port: currentPort,
     hostname: require('os').hostname()
   });
 });
@@ -504,7 +479,7 @@ app.get("/health", (req, res) => {
     message: "Backend funcionando",
     timestamp: new Date().toISOString(),
     ip: LOCAL_IP,
-    port: PORT
+    port: currentPort
   });
 });
 
@@ -514,14 +489,7 @@ app.get("/", (req, res) => {
     message: "OS Manager Backend API - Rede Local",
     version: "2.0.0",
     serverIp: LOCAL_IP,
-    port: PORT,
-    endpoints: {
-      health: "/health",
-      networkInfo: "/api/network/info",
-      auth: "/api/auth/:action",
-      users: "/api/users/:id?",
-      os: "/api/os/:id?"   
-    }
+    port: currentPort
   });
 });
 
@@ -531,57 +499,68 @@ io.on('connection', (socket) => {
   const clientIp = socket.handshake.address;
   console.log('🔌 Cliente conectado:', socket.id, '- IP:', clientIp);
   
-  // Enviar informações do servidor ao conectar
   socket.emit('server:info', {
     serverIp: LOCAL_IP,
-    port: PORT,
+    port: currentPort,
     message: 'Conectado ao servidor OS Manager'
   });
   
   socket.on('disconnect', () => {
-    console.log('❌ Cliente desconectado:', socket.id, '- IP:', clientIp);
+    console.log('❌ Cliente desconectado:', socket.id);
   });
   
   socket.on('os:subscribe', (osId) => {
     socket.join(`os:${osId}`);
-    console.log(`📡 Cliente ${socket.id} inscrito na OS ${osId}`);
+    console.log(`📡 Cliente inscrito na OS ${osId}`);
   });
   
   socket.on('os:unsubscribe', (osId) => {
     socket.leave(`os:${osId}`);
-    console.log(`📡 Cliente ${socket.id} desinscrito da OS ${osId}`);
+    console.log(`📡 Cliente desinscrito da OS ${osId}`);
   });
   
-  // Ping/Pong para manter conexão viva
   socket.on('ping', () => {
     socket.emit('pong');
   });
 });
 
-// ============== INICIAR SERVIDOR ==============
+// ============== INICIAR SERVIDOR COM DETECÇÃO DE PORTA ==============
 
-const PORT = parseInt(process.env.PORT) || 5000;
+let currentPort;
 
-// IMPORTANTE: Escutar em 0.0.0.0 para aceitar conexões de QUALQUER IP da rede
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`
+async function startServer() {
+  try {
+    // Encontrar porta disponível
+    currentPort = parseInt(process.env.PORT) || await findAvailablePort();
+    
+    // Iniciar servidor na porta encontrada
+    server.listen(currentPort, '0.0.0.0', () => {
+      console.log(`
 ╔════════════════════════════════════════════════╗
 ║     🚀 OS Manager Backend - REDE LOCAL        ║
 ╠════════════════════════════════════════════════╣
-║  Servidor Local: http://localhost:${PORT.toString().padEnd(18)}║
-║  IP da Rede:     http://${LOCAL_IP}:${PORT.toString().padEnd(18)}║
-║  WebSocket:      ws://${LOCAL_IP}:${PORT.toString().padEnd(22)}║
+║  Servidor Local: http://localhost:${currentPort.toString().padEnd(18)}║
+║  IP da Rede:     http://${LOCAL_IP}:${currentPort.toString().padEnd(18)}║
+║  WebSocket:      ws://${LOCAL_IP}:${currentPort.toString().padEnd(22)}║
 ╠════════════════════════════════════════════════╣
 ║  ✅ Aceitando conexões de toda a rede local   ║
 ║  🔌 Sincronização em tempo real ativada       ║
 ╚════════════════════════════════════════════════╝
-  `);
-  
-  console.log('\n📱 Para conectar outros dispositivos:');
-  console.log(`   1. Use o IP: ${LOCAL_IP}`);
-  console.log(`   2. Porta: ${PORT}`);
-  console.log(`   3. URL completa: http://${LOCAL_IP}:${PORT}\n`);
-});
+      `);
+      
+      console.log('\n📱 Para conectar outros dispositivos:');
+      console.log(`   1. Use o IP: ${LOCAL_IP}`);
+      console.log(`   2. Porta: ${currentPort}`);
+      console.log(`   3. URL completa: http://${LOCAL_IP}:${currentPort}\n`);
+    });
+  } catch (error) {
+    console.error('❌ Erro ao iniciar servidor:', error);
+    process.exit(1);
+  }
+}
+
+// Iniciar!
+startServer();
 
 // ============== MIDDLEWARE CATCH-ALL PARA SPA ==============
 app.use((req, res, next) => {
