@@ -54,7 +54,6 @@ const priorityConfig = {
   }
 };
 
-// Componente do card — div nativa para drag, motion só na animação de entrada
 function OSCardGridItem({
   order,
   index,
@@ -70,6 +69,8 @@ function OSCardGridItem({
   dragOverIndex,
   draggingIndex,
 }) {
+  const [isHovered, setIsHovered] = useState(false);
+
   if (!order) return null;
 
   const config = priorityConfig[order.priority] || priorityConfig.MEDIUM;
@@ -79,7 +80,6 @@ function OSCardGridItem({
   const isDragOver = dragOverIndex === index && draggingIndex !== index;
 
   return (
-    // div nativa com draggable — Framer Motion NÃO pode ser o elemento draggable
     <div
       draggable
       onDragStart={(e) => onDragStart(e, index)}
@@ -87,12 +87,13 @@ function OSCardGridItem({
       onDragEnter={(e) => { e.preventDefault(); onDragEnter(index); }}
       onDragOver={(e) => { e.preventDefault(); onDragOver(e); }}
       onDrop={(e) => { e.preventDefault(); onDrop(index); }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       className={`h-full transition-all duration-150 rounded-xl
         ${isDragging ? 'opacity-30 scale-95 cursor-grabbing' : 'cursor-default'}
         ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 scale-[1.02]' : ''}
       `}
     >
-      {/* motion.div interno apenas para animação de entrada/hover — não interfere no drag */}
       <motion.div
         layout
         initial={{ opacity: 0, scale: 0.9 }}
@@ -112,7 +113,6 @@ function OSCardGridItem({
                 {/* Coluna de controles: ▲ grip ▼ */}
                 <div
                   className="flex flex-col items-center gap-0 select-none flex-shrink-0"
-                  // Impede que clique nos botões inicie drag do card
                   onMouseDown={(e) => e.stopPropagation()}
                 >
                   <button
@@ -126,7 +126,6 @@ function OSCardGridItem({
                     <ChevronUp className="w-3.5 h-3.5" />
                   </button>
 
-                  {/* Handle visual de drag */}
                   <div
                     className="text-slate-300 hover:text-blue-400 cursor-grab active:cursor-grabbing py-0.5 px-1"
                     title="Arrastar para reorganizar"
@@ -214,14 +213,23 @@ function OSCardGridItem({
               )}
             </div>
 
-            {/* Rodapé */}
-            <div className="mt-4 pt-3 border-t border-slate-200" onMouseDown={(e) => e.stopPropagation()}>
-              <Link to={`/os/${order.id}`} className="w-full">
-                <Button variant="outline" size="sm" className="w-full hover:bg-slate-100">
-                  <ExternalLink className="w-4 h-4 mr-2" />
-                  Ver Detalhes
-                </Button>
-              </Link>
+            {/* Rodapé — botão só aparece no hover */}
+            <div
+              className="mt-4 pt-3 border-t border-slate-200"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div
+                className={`transition-all duration-200 overflow-hidden ${
+                  isHovered ? 'opacity-100 max-h-12' : 'opacity-0 max-h-0'
+                }`}
+              >
+                <Link to={`/os/${order.id}`} className="w-full">
+                  <Button variant="outline" size="sm" className="w-full hover:bg-slate-100">
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    Ver Detalhes
+                  </Button>
+                </Link>
+              </div>
             </div>
 
           </CardContent>
@@ -232,15 +240,12 @@ function OSCardGridItem({
 }
 
 export default function OSCardGrid({ orders, onReorder, onPriorityChange }) {
-  // Usar refs para evitar re-renders durante o drag que quebram o HTML DnD
   const draggingIndexRef = useRef(null);
   const dragOverIndexRef = useRef(null);
 
-  // State só para forçar re-render do highlight visual
   const [draggingIndex, setDraggingIndex] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
 
-  // ── Botões ────────────────────────────────────────────────────────
   const handleMoveUp = useCallback((index) => {
     if (index === 0) return;
     const newOrders = [...orders];
@@ -255,13 +260,11 @@ export default function OSCardGrid({ orders, onReorder, onPriorityChange }) {
     onReorder(newOrders);
   }, [orders, onReorder]);
 
-  // ── Drag and Drop ─────────────────────────────────────────────────
   const handleDragStart = useCallback((e, index) => {
     draggingIndexRef.current = index;
     dragOverIndexRef.current = null;
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(index)); // Firefox precisa disso
-    // Delay para o browser tirar o snapshot antes de mudar o visual
+    e.dataTransfer.setData('text/plain', String(index));
     requestAnimationFrame(() => {
       setDraggingIndex(index);
     });

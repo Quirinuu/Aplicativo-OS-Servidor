@@ -132,28 +132,34 @@ function getNodePath() {
 }
 
 async function startBackend() {
+  const isDev = !app.isPackaged;
+
+  // Não inicia um segundo processo — só verifica se ele está de pé.
+  if (isDev) {
+    backendPort = 5000;
+    console.log(`🔧 Dev mode: usando backend já iniciado pelo nodemon na porta ${backendPort}`);
+    const running = await waitForBackend(backendPort, 20);
+    if (!running) {
+      throw new Error('Backend (nodemon) não respondeu na porta 5000. Verifique se npm run dev:backend está rodando.');
+    }
+    console.log('✅ Backend (nodemon) detectado com sucesso!');
+    return;
+  }
+
+  // EM PRODUÇÃO: inicia o backend como processo filho
   try {
     backendPort = await findAvailablePort();
     console.log(`🔌 Usando porta: ${backendPort}`);
     
-    const isDev = !app.isPackaged;
+    let backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'backend', 'src', 'index.js');
     
-    let backendPath;
-    if (isDev) {
-      backendPath = path.join(process.cwd(), 'backend', 'src', 'index.js');
-    } else {
-      backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'backend', 'src', 'index.js');
-      
-      if (!fs.existsSync(backendPath)) {
-        console.error('❌ Backend não encontrado em app.asar.unpacked');
-        console.log('Tentando caminho alternativo...');
-        backendPath = path.join(process.resourcesPath, 'app', 'backend', 'src', 'index.js');
-      }
-      
-      if (!fs.existsSync(backendPath)) {
-        console.error('❌ Backend não encontrado em nenhum caminho');
-        throw new Error('Backend não encontrado');
-      }
+    if (!fs.existsSync(backendPath)) {
+      console.log('Tentando caminho alternativo...');
+      backendPath = path.join(process.resourcesPath, 'app', 'backend', 'src', 'index.js');
+    }
+    
+    if (!fs.existsSync(backendPath)) {
+      throw new Error('Backend não encontrado');
     }
     
     console.log(`✅ Backend encontrado: ${backendPath}`);
@@ -164,16 +170,14 @@ async function startBackend() {
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     }
 
-    const frontendDistPath = isDev 
-      ? path.join(process.cwd(), 'frontend', 'dist')
-      : path.join(process.resourcesPath, 'app', 'frontend', 'dist');
+    const frontendDistPath = path.join(process.resourcesPath, 'app', 'frontend', 'dist');
 
     const env = {
       ...process.env,
       PORT: backendPort.toString(),
       DATABASE_URL: `file:${dbPath}`,
       JWT_SECRET: store.get('jwtSecret') || crypto.randomBytes(64).toString('hex'),
-      NODE_ENV: isDev ? 'development' : 'production',
+      NODE_ENV: 'production',
       ELECTRON_RUN_AS_NODE: '1',
       FRONTEND_PATH: frontendDistPath
     };
@@ -191,18 +195,18 @@ async function startBackend() {
     console.log(`📦 Usando Node.js: ${nodePath}`);
 
     const backendNodeModules = path.join(path.dirname(backendPath), '..', 'node_modules');
-if (!fs.existsSync(backendNodeModules)) {
-  console.log('📦 Instalando dependências do backend...');
-  const npmPath = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const installProcess = spawn(npmPath, ['install', '--omit=dev'], {
-    cwd: path.dirname(path.dirname(backendPath)),
-    stdio: 'inherit'
-  });
-  
-  await new Promise((resolve) => {
-    installProcess.on('close', resolve);
-  });
-}
+    if (!fs.existsSync(backendNodeModules)) {
+      console.log('📦 Instalando dependências do backend...');
+      const npmPath = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      const installProcess = spawn(npmPath, ['install', '--omit=dev'], {
+        cwd: path.dirname(path.dirname(backendPath)),
+        stdio: 'inherit'
+      });
+      
+      await new Promise((resolve) => {
+        installProcess.on('close', resolve);
+      });
+    }
 
     backendProcess = spawn(nodePath, [backendPath], {
       env: env,
@@ -284,13 +288,11 @@ function createWindow() {
     show: false
   });
 
-  // SEMPRE carregar via HTTP (tanto dev quanto produção)
   const url = isDev ? 'http://localhost:3000' : `http://localhost:${backendPort}`;
   console.log(`🌐 Carregando aplicação de: ${url}`);
   
   mainWindow.loadURL(url);
 
-  // DevTools apenas em desenvolvimento
   if (isDev) {
     mainWindow.webContents.openDevTools();
   }
@@ -309,7 +311,6 @@ function createWindow() {
     console.error(`   Código: ${errorCode}`);
     console.error(`   Descrição: ${errorDescription}`);
     
-    // Se falhar ao carregar, tenta recarregar após 2 segundos
     if (errorCode === -102 || errorCode === -6) {
       console.log('⏳ Tentando recarregar em 2 segundos...');
       setTimeout(() => {
@@ -349,10 +350,6 @@ app.whenReady().then(async () => {
     
     ensureDirectories();
     await startBackend();
-    
-    // Aguardar 2 segundos adicionais para garantir que o backend está servindo arquivos
-    console.log('⏳ Aguardando backend ficar pronto...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
     
     createWindow();
 
