@@ -1,39 +1,25 @@
-// frontend/src/api/client.js
-// Gerenciador de porta do backend
-let backendPort = null;
+// frontend/src/api/client.js  ← APP SERVIDOR
+// Detecta automaticamente o host pelo qual o browser acessou o app.
+// Funciona tanto em localhost quanto quando acessado por IP na rede (ex: 192.168.0.100:5000)
 
-// Função para obter a porta do backend
-async function getBackendPort() {
-  if (backendPort) return backendPort;
-  
-  // Se estiver no Electron, pegar porta dinâmica
-  if (window.electronAPI) {
-    try {
-      backendPort = await window.electronAPI.getBackendPort();
-      console.log('🔌 Porta do backend (Electron):', backendPort);
-      return backendPort;
-    } catch (error) {
-      console.error('Erro ao obter porta do Electron:', error);
-    }
+function getBaseURL() {
+  // Dev com Vite (variável de ambiente explícita)
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL.replace(/\/$/, '');
   }
-  
-  // Fallback para desenvolvimento (navegador)
-  backendPort = 3001;
-  console.log('🔌 Porta do backend (Browser):', backendPort);
-  return backendPort;
+
+  // Produção: usa o mesmo host/porta que o browser usou para abrir o app
+  // Se acessado como http://192.168.0.100:5000 → API em http://192.168.0.100:5000
+  // Se acessado como http://localhost:5000     → API em http://localhost:5000
+  const { protocol, hostname, port } = window.location;
+  const p = port || (protocol === 'https:' ? '443' : '80');
+  return `${protocol}//${hostname}:${p}`;
 }
 
-// Função para obter URL da API
-async function getApiUrl() {
-  const port = await getBackendPort();
-  return `http://localhost:${port}/api`;
-}
-
-// Helper para fazer requisições
 async function fetchAPI(endpoint, options = {}) {
-  const API_URL = await getApiUrl();
+  const BASE = getBaseURL();
   const token = localStorage.getItem('token');
-  
+
   const config = {
     ...options,
     headers: {
@@ -42,152 +28,72 @@ async function fetchAPI(endpoint, options = {}) {
     },
   };
 
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) config.headers.Authorization = `Bearer ${token}`;
 
-  console.log(`📡 Fazendo requisição: ${API_URL}${endpoint}`);
-  
-  const response = await fetch(`${API_URL}${endpoint}`, config);
-  
+  const url = `${BASE}/api${endpoint}`;
+  console.log(`📡 ${options.method || 'GET'} ${url}`);
+
+  const response = await fetch(url, config);
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Erro desconhecido' }));
-    throw new Error(error.error || 'Erro na requisição');
+    throw new Error(error.error || `Erro ${response.status}`);
   }
 
   return response.json();
 }
 
-// API de Autenticação
 export const auth = {
   login: async (username, password) => {
     const data = await fetchAPI('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     });
-    
-    if (data.token) {
-      localStorage.setItem('token', data.token);
-    }
-    
-    if (data.user) {
-      localStorage.setItem('user', JSON.stringify(data.user));
-    }
-    
+    if (data.token) localStorage.setItem('token', data.token);
+    if (data.user) localStorage.setItem('user', JSON.stringify(data.user));
     return data;
   },
-
   me: async () => {
     const data = await fetchAPI('/auth/me');
     return data.user;
   },
-
   logout: () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   },
 };
 
-// API de Usuários
 export const users = {
-  list: async () => {
-    const data = await fetchAPI('/users');
-    return data.users;
-  },
-
-  getById: async (id) => {
-    const data = await fetchAPI(`/users/${id}`);
-    return data.user;
-  },
-
-  create: async (userData) => {
-    const data = await fetchAPI('/users', {
-      method: 'POST',
-      body: JSON.stringify(userData),
-    });
-    return data.user;
-  },
-
-  update: async (id, userData) => {
-    const data = await fetchAPI(`/users/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(userData),
-    });
-    return data.user;
-  },
-
-  delete: async (id) => {
-    return fetchAPI(`/users/${id}`, {
-      method: 'DELETE',
-    });
-  },
+  list: async () => (await fetchAPI('/users')).users,
+  getById: async (id) => (await fetchAPI(`/users/${id}`)).user,
+  create: async (data) => (await fetchAPI('/users', { method: 'POST', body: JSON.stringify(data) })).user,
+  update: async (id, data) => (await fetchAPI(`/users/${id}`, { method: 'PUT', body: JSON.stringify(data) })).user,
+  delete: async (id) => fetchAPI(`/users/${id}`, { method: 'DELETE' }),
 };
 
-// API de OS
 export const serviceOrders = {
   list: async (filters = {}) => {
     const params = new URLSearchParams();
-    
     if (filters.status && filters.status !== 'all') params.append('status', filters.status);
     if (filters.priority && filters.priority !== 'all') params.append('priority', filters.priority);
     if (filters.clientName) params.append('clientName', filters.clientName);
     if (filters.equipmentName) params.append('equipmentName', filters.equipmentName);
-    
-    const queryString = params.toString();
-    const endpoint = queryString ? `/os?${queryString}` : '/os';
-    
-    const data = await fetchAPI(endpoint);
-    return data.orders;
+    const qs = params.toString();
+    return (await fetchAPI(qs ? `/os?${qs}` : '/os')).orders;
   },
-
-  getById: async (id) => {
-    const data = await fetchAPI(`/os/${id}`);
-    return data.order;
-  },
-
-  create: async (osData) => {
-    const data = await fetchAPI('/os', {
-      method: 'POST',
-      body: JSON.stringify(osData),
-    });
-    return data.order;
-  },
-
-  update: async (id, osData) => {
-    const data = await fetchAPI(`/os/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(osData),
-    });
-    return data.order;
-  },
-
-  delete: async (id) => {
-    return fetchAPI(`/os/${id}`, {
-      method: 'DELETE',
-    });
-  },
-
-  addComment: async (osId, commentData) => {
-    const data = await fetchAPI(`/os/${osId}/comments`, {
-      method: 'POST',
-      body: JSON.stringify(commentData),
-    });
-    return data.comment;
-  },
-
+  getById: async (id) => (await fetchAPI(`/os/${id}`)).order,
+  create: async (data) => (await fetchAPI('/os', { method: 'POST', body: JSON.stringify(data) })).order,
+  update: async (id, data) => (await fetchAPI(`/os/${id}`, { method: 'PUT', body: JSON.stringify(data) })).order,
+  delete: async (id) => fetchAPI(`/os/${id}`, { method: 'DELETE' }),
+  addComment: async (osId, data) => (await fetchAPI(`/os/${osId}/comments`, { method: 'POST', body: JSON.stringify(data) })).comment,
   history: async (filters = {}) => {
     const params = new URLSearchParams();
-    
     if (filters.startDate) params.append('startDate', filters.startDate);
     if (filters.endDate) params.append('endDate', filters.endDate);
     if (filters.clientName) params.append('clientName', filters.clientName);
     if (filters.equipmentName) params.append('equipmentName', filters.equipmentName);
-    
-    const queryString = params.toString();
-    const endpoint = queryString ? `/os/history?${queryString}` : '/os/history';
-    
-    const data = await fetchAPI(endpoint);
-    return data.orders;
+    const qs = params.toString();
+    return (await fetchAPI(qs ? `/os/history?${qs}` : '/os/history')).orders;
   },
 };
 

@@ -1,99 +1,111 @@
-// frontend/src/api/socket.js
+// frontend/src/api/socket.js  ← APP SERVIDOR
 import { io } from 'socket.io-client';
 import { toast } from 'sonner';
 
-// Função para obter a porta do backend
-async function getBackendPort() {
-  // Se estiver no Electron, pegar porta dinâmica
-  if (window.electronAPI) {
-    try {
-      const port = await window.electronAPI.getBackendPort();
-      console.log('🔌 Socket - Porta do backend (Electron):', port);
-      return port;
-    } catch (error) {
-      console.error('Erro ao obter porta do Electron:', error);
-    }
+function getBackendURL() {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL.replace(/\/$/, '');
   }
-  
-  // Fallback para desenvolvimento (navegador)
-  console.log('🔌 Socket - Porta do backend (Browser): 3001');
-  return 3001;
+  // Usa o mesmo host que o browser usou — funciona em localhost e por IP
+  const { protocol, hostname, port } = window.location;
+  const p = port || (protocol === 'https:' ? '443' : '80');
+  return `${protocol}//${hostname}:${p}`;
 }
 
 class SocketService {
   constructor() {
     this.socket = null;
     this.listeners = new Map();
-    this.backendPort = null;
+    this._connectionListeners = [];
   }
 
-  async connect(token) {
-    if (this.socket?.connected) {
-      console.log('Socket já conectado');
-      return;
+  connect(token) {
+    if (this.socket?.connected) return;
+
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
     }
 
-    // Obter porta do backend
-    if (!this.backendPort) {
-      this.backendPort = await getBackendPort();
-    }
+    const SERVER_URL = getBackendURL();
+    console.log('🔌 Conectando socket em:', SERVER_URL);
 
-    const SOCKET_URL = `http://localhost:${this.backendPort}`;
-    console.log('🔌 Conectando socket em:', SOCKET_URL);
-
-    this.socket = io(SOCKET_URL, {
+    this.socket = io(SERVER_URL, {
       auth: { token },
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 2000,
+      reconnectionAttempts: 10,
     });
 
     this.socket.on('connect', () => {
       console.log('✅ WebSocket conectado:', this.socket.id);
-      toast.success('Sincronização em tempo real ativada', {
-        duration: 2000
-      });
+      toast.success('Sincronização em tempo real ativada', { duration: 2000 });
+      this._notifyConnection(true);
     });
 
     this.socket.on('disconnect', () => {
       console.log('❌ WebSocket desconectado');
-      toast.warning('Sincronização pausada', {
-        duration: 2000
-      });
+      toast.warning('Sincronização offline', { duration: 3000 });
+      this._notifyConnection(false);
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('Erro na conexão WebSocket:', error);
+      console.error('Erro WebSocket:', error.message);
+      this._notifyConnection(false);
+    });
+
+    ['os:created', 'os:updated', 'os:deleted', 'os:comment', 'server:info'].forEach(event => {
+      this.socket.on(event, (data) => {
+        console.log(`📨 ${event}`, data);
+        this._fire(event, data);
+      });
     });
   }
 
   disconnect() {
     if (this.socket) {
+      this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
-      this.listeners.clear();
     }
+    this.listeners.clear();
+    this._connectionListeners = [];
   }
 
   on(event, callback) {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, []);
-    }
+    if (!this.listeners.has(event)) this.listeners.set(event, []);
     this.listeners.get(event).push(callback);
   }
 
   off(event, callback) {
     if (this.listeners.has(event)) {
-      const callbacks = this.listeners.get(event);
-      const index = callbacks.indexOf(callback);
-      if (index > -1) {
-        callbacks.splice(index, 1);
-      }
+      const cbs = this.listeners.get(event);
+      const i = cbs.indexOf(callback);
+      if (i > -1) cbs.splice(i, 1);
     }
   }
 
-  trigger(event, data) {
-    if (this.listeners.has(event)) {
-      this.listeners.get(event).forEach(callback => callback(data));
-    }
+  onConnectionChange(callback) {
+    this._connectionListeners.push(callback);
+    return () => {
+      this._connectionListeners = this._connectionListeners.filter(c => c !== callback);
+    };
+  }
+
+  get isConnected() {
+    return this.socket?.connected ?? false;
+  }
+
+  _fire(event, data) {
+    (this.listeners.get(event) || []).forEach(cb => {
+      try { cb(data); } catch (e) { console.error(`Listener ${event}:`, e); }
+    });
+  }
+
+  _notifyConnection(status) {
+    this._connectionListeners.forEach(cb => { try { cb(status); } catch (e) {} });
   }
 }
 
