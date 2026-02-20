@@ -74,7 +74,7 @@ export default function Dashboard() {
   const createMutation = useMutation({
     mutationFn: (data) => api.serviceOrders.create(data),
     onSuccess: () => {
-      queryClient.invalidateQueries(['orders']);
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       setShowForm(false);
       toast.success('OS criada com sucesso!');
     },
@@ -86,7 +86,7 @@ export default function Dashboard() {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => api.serviceOrders.update(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries(['orders']);
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       toast.success('Prioridade atualizada!');
     },
     onError: (error) => {

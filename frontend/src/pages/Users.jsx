@@ -80,7 +80,7 @@ export default function Users() {
   const createMutation = useMutation({
     mutationFn: (userData) => api.users.create(userData),
     onSuccess: () => {
-      queryClient.invalidateQueries(['users']);
+      queryClient.invalidateQueries({ queryKey: ['users'] });
       setShowCreateDialog(false);
       setCreateEmail('');
       setCreateFullName('');
@@ -96,7 +96,7 @@ export default function Users() {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => api.users.update(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries(['users']);
+      queryClient.invalidateQueries({ queryKey: ['users'] });
       setShowEditDialog(false);
       setEditingUser(null);
       toast.success('Usuário atualizado!');
@@ -109,7 +109,7 @@ export default function Users() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.users.delete(id),
     onSuccess: () => {
-      queryClient.invalidateQueries(['users']);
+      queryClient.invalidateQueries({ queryKey: ['users'] });
       toast.success('Usuário desativado!');
     },
     onError: (error) => {

@@ -97,8 +97,8 @@ export default function OSDetails() {
   const updateMutation = useMutation({
     mutationFn: (updates) => api.serviceOrders.update(id, updates),
     onSuccess: () => {
-      queryClient.invalidateQueries(['order', id]);
-      queryClient.invalidateQueries(['orders']);
+      queryClient.invalidateQueries({ queryKey: ['order', id] });
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       setIsEditing(false);
       toast.success('OS atualizada com sucesso!');
     },
@@ -111,7 +111,7 @@ export default function OSDetails() {
   const commentMutation = useMutation({
     mutationFn: (commentData) => api.serviceOrders.addComment(id, commentData),
     onSuccess: () => {
-      queryClient.invalidateQueries(['order', id]);
+      queryClient.invalidateQueries({ queryKey: ['order', id] });
       setNewComment({ type: 'NOTE', content: '' });
       toast.success('Comentário adicionado!');
     },
@@ -124,7 +124,7 @@ export default function OSDetails() {
   const deleteOSMutation = useMutation({
     mutationFn: () => api.serviceOrders.delete(id),
     onSuccess: () => {
-      queryClient.invalidateQueries(['orders']);
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       toast.success('OS finalizada!');
       navigate('/dashboard');
     },
