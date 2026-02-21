@@ -1,4 +1,3 @@
-// frontend/src/api/socket.js  ← APP SERVIDOR
 import { io } from 'socket.io-client';
 import { toast } from 'sonner';
 
@@ -6,7 +5,15 @@ function getBackendURL() {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL.replace(/\/$/, '');
   }
-  // Usa o mesmo host que o browser usou — funciona em localhost e por IP
+  try {
+    const saved = localStorage.getItem('serverConfig');
+    if (saved) {
+      const config = JSON.parse(saved);
+      if (config?.baseURL) return config.baseURL.replace(/\/$/, '');
+    }
+  } catch {}
+
+  // Sem config: usa o mesmo host (funciona para o servidor)
   const { protocol, hostname, port } = window.location;
   const p = port || (protocol === 'https:' ? '443' : '80');
   return `${protocol}//${hostname}:${p}`;
@@ -29,6 +36,8 @@ class SocketService {
     }
 
     const SERVER_URL = getBackendURL();
+    if (!SERVER_URL) return;
+
     console.log('🔌 Conectando socket em:', SERVER_URL);
 
     this.socket = io(SERVER_URL, {
@@ -64,6 +73,7 @@ class SocketService {
     });
   }
 
+  // Desconecta o socket MAS mantém os listeners de conexão registrados
   disconnect() {
     if (this.socket) {
       this.socket.removeAllListeners();
@@ -71,6 +81,12 @@ class SocketService {
       this.socket = null;
     }
     this.listeners.clear();
+    // NÃO limpa _connectionListeners aqui — isso quebrava o badge de status
+  }
+
+  // Destroi completamente (usar só no logout real)
+  destroy() {
+    this.disconnect();
     this._connectionListeners = [];
   }
 

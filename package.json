@@ -1,7 +1,7 @@
 {
-  "name": "os-manager-desktop",
+  "name": "os-manager-servidor",
   "version": "1.0.0",
-  "description": "Sistema de Gestão de Ordens de Serviço - Aplicativo Desktop",
+  "description": "Sistema de Gestão de Ordens de Serviço - Servidor",
   "main": "electron/main.js",
   "author": "OS Manager Team",
   "license": "MIT",
@@ -29,15 +29,14 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.osmanager.desktop",
-    "productName": "OS Manager",
+    "appId": "com.osmanager.servidor",
+    "productName": "OS Manager - Servidor",
     "directories": {
       "output": "dist",
       "buildResources": "build"
     },
     "files": [
       "electron/**/*",
-      "frontend/dist/**/*",
       "backend/src/**/*",
       "backend/prisma/**/*",
       "backend/node_modules/**/*",
@@ -60,6 +59,10 @@
         "from": "frontend/dist",
         "to": "app/frontend/dist",
         "filter": ["**/*"]
+      },
+      {
+        "from": "build/node-20.18.1-x64.msi",
+        "to": "node-installer.msi"
       }
     ],
     "win": {
@@ -70,16 +73,16 @@
         }
       ],
       "icon": "build/icon.ico",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": false,
+      "perMachine": true,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "OS Manager",
+      "shortcutName": "OS Manager - Servidor",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false,

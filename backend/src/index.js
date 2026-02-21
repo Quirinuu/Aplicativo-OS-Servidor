@@ -285,12 +285,14 @@ const db = initDatabase();
 // ============== CORS ==============
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  // origin === 'null' (string) acontece quando Electron carrega via file://
   const isLocal = !origin ||
+    origin === 'null' ||
     origin.includes('localhost') ||
     origin.includes('127.0.0.1') ||
     /\b(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+\b/.test(origin);
 
-  if (isLocal) res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  if (isLocal) res.setHeader('Access-Control-Allow-Origin', (origin && origin !== 'null') ? origin : '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -310,7 +312,8 @@ app.use((req, res, next) => {
 const io = new Server(server, {
   cors: {
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
+      // Aceita sem origin, origin 'null' (Electron file://) e IPs de rede local
+      if (!origin || origin === 'null') return cb(null, true);
       const ok = origin.includes('localhost') || origin.includes('127.0.0.1') ||
         /\b(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+\b/.test(origin);
       ok ? cb(null, true) : cb(new Error('CORS bloqueado'));
