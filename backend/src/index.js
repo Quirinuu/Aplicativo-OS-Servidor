@@ -1,8 +1,9 @@
-// backend/src/index.js — COM BANCO DE DADOS SQLITE REAL (better-sqlite3)
+// backend/src/index.js
 
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const { SHOficinaSync } = require('./sync/shoficina');
 
 // ============== AMBIENTE ==============
 if (process.env.NODE_ENV !== 'production') {
@@ -57,16 +58,14 @@ async function findAvailablePort() {
 function initDatabase() {
   const Database = require('better-sqlite3');
 
-  // Aceita DATABASE_URL como "file:/caminho/do/arquivo.db" ou só o caminho
   let dbPath = process.env.DATABASE_URL || '';
   if (dbPath.startsWith('file:')) {
-    dbPath = dbPath.slice(5); // remove "file:"
+    dbPath = dbPath.slice(5);
   }
   if (!dbPath) {
     dbPath = path.join(__dirname, '..', 'osmanager.db');
   }
 
-  // Garante que o diretório existe
   const dbDir = path.dirname(dbPath);
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
@@ -76,11 +75,9 @@ function initDatabase() {
 
   const db = new Database(dbPath);
 
-  // Performance
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  // ── Criação das tabelas ──────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +118,6 @@ function initDatabase() {
     );
   `);
 
-  // ── Seed: usuários padrão se a tabela estiver vazia ─────────────
   const userCount = db.prepare('SELECT COUNT(*) as n FROM users').get().n;
   if (userCount === 0) {
     console.log('🌱 Criando usuários padrão...');
@@ -245,7 +241,6 @@ function getAllOrders(db, filters = {}) {
 
   const rows = db.prepare(sql).all(...params);
 
-  // Busca comments em batch
   const ids = rows.map(r => r.id);
   let commentsMap = {};
   if (ids.length > 0) {
@@ -279,13 +274,28 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 
-// Inicializa o banco
+// ─── db e io precisam existir antes do shoSync ───────────────────
 const db = initDatabase();
+
+const io = new Server(server, {
+  cors: {
+    origin: (origin, cb) => {
+      if (!origin || origin === 'null') return cb(null, true);
+      const ok = origin.includes('localhost') || origin.includes('127.0.0.1') ||
+        /\b(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+\b/.test(origin);
+      ok ? cb(null, true) : cb(new Error('CORS bloqueado'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true,
+  },
+});
+
+// ─── SHOficina sync (criado depois de db e io) ───────────────────
+const shoSync = new SHOficinaSync(db, io);
 
 // ============== CORS ==============
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  // origin === 'null' (string) acontece quando Electron carrega via file://
   const isLocal = !origin ||
     origin === 'null' ||
     origin.includes('localhost') ||
@@ -309,20 +319,6 @@ app.use((req, res, next) => {
 });
 
 // ============== SOCKET.IO ==============
-const io = new Server(server, {
-  cors: {
-    origin: (origin, cb) => {
-      // Aceita sem origin, origin 'null' (Electron file://) e IPs de rede local
-      if (!origin || origin === 'null') return cb(null, true);
-      const ok = origin.includes('localhost') || origin.includes('127.0.0.1') ||
-        /\b(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+\b/.test(origin);
-      ok ? cb(null, true) : cb(new Error('CORS bloqueado'));
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
-  },
-});
-
 io.on('connection', (socket) => {
   console.log('🔌 Cliente conectado:', socket.id, '—', socket.handshake.address);
   socket.emit('server:info', { serverIp: LOCAL_IP, message: 'Conectado ao OS Manager' });
@@ -338,7 +334,6 @@ function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '').trim();
   if (!token || token === 'null') return res.status(401).json({ error: 'Não autorizado' });
 
-  // Token simples: "token-{userId}-{timestamp}"
   const match = token.match(/^token-(\d+)-\d+$/);
   if (!match) return res.status(401).json({ error: 'Token inválido' });
 
@@ -410,7 +405,7 @@ app.post('/api/users', authMiddleware, (req, res) => {
 app.put('/api/users/:id', authMiddleware, (req, res) => {
   const id = parseInt(req.params.id);
   const { username, fullName, email, role, password } = req.body;
-  
+
   const current = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!current) return res.status(404).json({ error: 'Usuário não encontrado' });
 
@@ -509,7 +504,6 @@ app.put('/api/os/:id', authMiddleware, (req, res) => {
 
   const now = new Date().toISOString();
 
-  // Se está sendo marcada como concluída agora, registra completedAt
   let resolvedCompletedAt = completedAt !== undefined ? completedAt : current.completedAt;
   if (currentStatus === 'COMPLETED' && !resolvedCompletedAt) {
     resolvedCompletedAt = now;
@@ -646,6 +640,9 @@ async function startServer() {
 ╚════════════════════════════════════════════════╝
     `);
     console.log(`📱 Conectar outros dispositivos: http://${ip}:${p}\n`);
+
+    // Inicia sync SHOficina após o servidor estar pronto
+    shoSync.start();
   });
 }
 
