@@ -8,9 +8,12 @@ const MDB_PATH      = process.env.SHOFICINA_PATH     || 'C:\\SHARMAQ\\SHOficina\
 const MDB_PASS      = process.env.SHOFICINA_PASS     || '!(&&!!)&';
 const POLL_INTERVAL = parseInt(process.env.SHOFICINA_INTERVAL || '5000');
 
-function mapStatus(s) {
-  if (!s) return 'RECEIVED';
-  const v = String(s).toLowerCase().trim();
+const STATUS_ORDER = { RECEIVED: 0, WAITING: 1, IN_PROGRESS: 2, COMPLETED: 3 };
+
+function mapStatus(situacao, pronto) {
+  if (String(pronto || '').trim().toUpperCase() === 'S') return 'COMPLETED';
+  if (!situacao) return 'RECEIVED';
+  const v = String(situacao).toLowerCase().trim();
   if (v.includes('conclu') || v.includes('pronto') || v.includes('entreg')) return 'COMPLETED';
   if (v.includes('andamento') || v.includes('execu') || v.includes('reparo'))  return 'IN_PROGRESS';
   if (v.includes('aguard') || v.includes('espera'))                             return 'WAITING';
@@ -20,27 +23,19 @@ function mapStatus(s) {
 function mapPriority(p) {
   if (!p) return 'MEDIUM';
   const v = String(p).toLowerCase();
-  if (v.includes('urg') || v === '1')   return 'URGENT';
-  if (v.includes('alta') || v === '2')  return 'HIGH';
-  if (v.includes('baixa') || v === '4') return 'LOW';
+  if (v === 's' || v === '1' || v.includes('urg')) return 'URGENT';
+  if (v.includes('alta') || v === '2')              return 'HIGH';
+  if (v.includes('baixa') || v === '4')             return 'LOW';
   return 'MEDIUM';
 }
 
-// Grava o script em arquivo .ps1 temporário e executa com -File
-// Isso evita que a senha !(&&!!)& quebre o parsing do -Command
 function runPS1(scriptContent) {
   const tmpFile = path.join(os.tmpdir(), `sho_${Date.now()}.ps1`);
   try {
-    // BOM UTF-8 garante que o PowerShell leia acentos corretamente
     fs.writeFileSync(tmpFile, '\uFEFF' + scriptContent, { encoding: 'utf8' });
-
     const result = execFileSync('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass',
-      '-File', tmpFile,
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpFile,
     ], { timeout: 15000, encoding: 'utf8' });
-
     return result.trim();
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
@@ -48,23 +43,19 @@ function runPS1(scriptContent) {
 }
 
 function buildConnScript(body) {
-  // Usa here-string (@'...'@) para a connection string — imune a qualquer char especial
   return `
 $ErrorActionPreference = 'Stop'
 $pass = @'
 ${MDB_PASS}
 '@
 $pass = $pass.Trim()
-$src  = @'
+$src = @'
 ${MDB_PATH}
 '@
 $src = $src.Trim()
-
 $conn = New-Object System.Data.OleDb.OleDbConnection
 $conn.ConnectionString = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source='$src';Jet OLEDB:Database Password='$pass';"
-try {
-  $conn.Open()
-} catch {
+try { $conn.Open() } catch {
   $conn.ConnectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source='$src';Jet OLEDB:Database Password='$pass';"
   $conn.Open()
 }
@@ -91,11 +82,10 @@ while ($reader.Read()) {
 $reader.Close()
 if ($rows.Count -eq 0) { Write-Output '[]' } else { $rows | ConvertTo-Json -Depth 2 -Compress }
 `;
-
   try {
-    const output = runPS1(buildConnScript(body));
-    if (!output || output === 'null' || output === '[]') return [];
-    const parsed = JSON.parse(output);
+    const out = runPS1(buildConnScript(body));
+    if (!out || out === '[]' || out === 'null') return [];
+    const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch (err) {
     console.error('❌ [SHOficina] Erro ao consultar MDB:', err.message.split('\n')[0]);
@@ -114,13 +104,11 @@ foreach ($row in $schema.Rows) { $names += $row['TABLE_NAME'] }
 $names | ConvertTo-Json -Compress
 `;
   try {
-    const output = runPS1(buildConnScript(body));
-    if (!output) return [];
-    const parsed = JSON.parse(output);
+    const out = runPS1(buildConnScript(body));
+    if (!out) return [];
+    const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 function discoverColumns() {
@@ -130,7 +118,6 @@ function discoverColumns() {
     console.log('📋 [SHOficina] Tabelas encontradas:', allTables.join(', '));
   }
 
-  // Tabelas que definitivamente NÃO são OS — ignora
   const blacklist = new Set([
     'BANCOS', 'CLIENTES', 'FORNECEDORES', 'FUNCIONARIOS', 'USUARIOS',
     'CHEQUES', 'BOLETOS', 'CARTOES', 'CONTAS', 'DESPESAS', 'DESP_FIXAS',
@@ -139,13 +126,11 @@ function discoverColumns() {
     'PEDIDOS', 'PLANOS', 'CONTRATOS', 'EQUIPAMENTOS', 'LOGUSER',
   ]);
 
-  // Candidatos em ordem de prioridade — ORDEMS é o nome real no SHOficina
   const priority = [
     'ORDEMS', 'OS', 'OrdemServico', 'OrdensServico', 'ordem_servico',
     'Ordens_Servico', 'tblOS', 'tblOrdens', 'OSTable',
   ];
 
-  // Junta: prioritários primeiro, depois o restante do banco (exceto blacklist)
   const candidates = [
     ...priority,
     ...allTables.filter(t => !blacklist.has(t) && !priority.includes(t)),
@@ -155,14 +140,13 @@ function discoverColumns() {
     const rows = queryMDB(`SELECT TOP 1 * FROM [${table}]`);
     if (rows && rows.length > 0) {
       const cols = Object.keys(rows[0]);
-      // Valida que tem pelo menos uma coluna parecida com OS (cliente ou número)
       const looksLikeOS = cols.some(c => {
         const l = c.toLowerCase();
-        return l.includes('cliente') || l.includes('numero') || l.includes('equipamento') ||
+        return l.includes('cliente') || l.includes('aparelho') || l.includes('equipamento') ||
                l.includes('status') || l.includes('situac') || l.includes('defeito');
       });
       if (!looksLikeOS) {
-        console.log(`⏭️  [SHOficina] Pulando "${table}" — não parece tabela de OS. Colunas: ${cols.join(', ')}`);
+        console.log(`⏭️  [SHOficina] Pulando "${table}" — não parece tabela de OS`);
         continue;
       }
       console.log(`✅ [SHOficina] Tabela de OS: "${table}"`);
@@ -183,21 +167,21 @@ function inferColumns(columns) {
 
   return {
     id:           find('CODIGO'),
-    osNumber:     find('CODIGO'),           // número da OS = CODIGO
-    client:       find('COD_CLIENTE'),      // código — vai buscar nome na tabela CLIENTES
-    equipment:    find('APARELHO'),         // nome do aparelho
+    osNumber:     find('CODIGO'),
+    client:       find('COD_CLIENTE'),
+    equipment:    find('APARELHO'),
     brand:        find('MARCA'),
     model:        find('MODELO'),
     serial:       find('SERIE'),
     patrimony:    find('PATRIMONIO'),
     accessories:  find('ACESSORIO'),
     defect:       find('DEFEITO'),
-    observations: find('OBS_SERVICO'),      // observações do serviço (não do aparelho)
+    observations: find('OBS_SERVICO'),
     status:       find('SITUACAO'),
     priority:     find('PRIOR'),
-    createdAt:    find('ENTRADA'),          // data de entrada
-    completedAt:  find('SAIDA'),            // data de saída
-    pronto:       find('PRONTO'),           // flag de pronto (S/N)
+    createdAt:    find('ENTRADA'),
+    completedAt:  find('SAIDA'),
+    pronto:       find('PRONTO'),
   };
 }
 
@@ -240,7 +224,7 @@ class SHOficinaSync {
     this._poll();
   }
 
-_poll() {
+  _poll() {
     const { table } = this.tableInfo;
     const col = this.colMap;
 
@@ -266,36 +250,30 @@ _poll() {
     for (const row of rows) this._syncRow(row);
   }
 
-   _syncRow(row) {
+  _syncRow(row) {
     const col = this.colMap;
 
-    const extId      = col.id          ? String(row[col.id]          || '').trim() : null;
-    const osNumber   = extId; // CODIGO é tanto o ID quanto o número da OS
+    const extId      = col.id ? String(row[col.id] || '').trim() : null;
+    const osNumber   = extId;
 
-    // Nome do cliente vem do JOIN com CLIENTES
     const clientName = row['NOME_CLIENTE']
       ? String(row['NOME_CLIENTE']).trim()
       : (col.client ? String(row[col.client] || '').trim() : 'Cliente SHOficina');
 
-    const aparelho   = col.equipment    ? String(row[col.equipment]   || '').trim() : '';
-    const marca      = col.brand        ? String(row[col.brand]       || '').trim() : '';
-    const modelo     = col.model        ? String(row[col.model]       || '').trim() : '';
-    const equipParts = [aparelho, marca, modelo].filter(Boolean);
-    const equipment  = equipParts.join(' — ') || 'Equipamento';
+    const aparelho   = col.equipment   ? String(row[col.equipment]   || '').trim() : '';
+    const marca      = col.brand       ? String(row[col.brand]       || '').trim() : '';
+    const modelo     = col.model       ? String(row[col.model]       || '').trim() : '';
+    const equipment  = [aparelho, marca, modelo].filter(Boolean).join(' — ') || 'Equipamento';
 
-    const serial     = col.serial       ? String(row[col.serial]      || '').trim() : null;
-    const patrimony  = col.patrimony    ? String(row[col.patrimony]   || '').trim() : null;
-    const acessorios = col.accessories  ? String(row[col.accessories] || '').trim() : null;
-    const accessParts = [acessorios, patrimony ? `Patrimônio: ${patrimony}` : null].filter(Boolean);
-    const accessories = accessParts.join(' | ') || null;
+    const serial     = col.serial      ? String(row[col.serial]      || '').trim() : null;
+    const patrimony  = col.patrimony   ? String(row[col.patrimony]   || '').trim() : null;
+    const acessorios = col.accessories ? String(row[col.accessories] || '').trim() : null;
+    const accessories = [acessorios, patrimony ? `Patrimônio: ${patrimony}` : null]
+      .filter(Boolean).join(' | ') || null;
 
-    const defect     = col.defect       ? String(row[col.defect]      || '').trim() : null;
-    const obs        = col.observations ? String(row[col.observations]|| '').trim() : null;
-
-    // Status: PRONTO=S significa concluído, senão usa SITUACAO
-    const pronto = col.pronto ? String(row[col.pronto] || '').trim().toUpperCase() : '';
-    const status = pronto === 'S' ? 'COMPLETED' : mapStatus(col.status ? row[col.status] : null);
-
+    const defect     = col.defect       ? String(row[col.defect]       || '').trim() : null;
+    const obs        = col.observations ? String(row[col.observations] || '').trim() : null;
+    const status     = mapStatus(col.status ? row[col.status] : null, col.pronto ? row[col.pronto] : null);
     const priority   = mapPriority(col.priority ? row[col.priority] : null);
 
     if (!osNumber || !extId) return;
@@ -322,9 +300,7 @@ _poll() {
         defect ? 1 : 0,
         defect      || null,
         `[shoficina:${extId}]${obs ? ' ' + obs : ''}`.trim(),
-        priority,
-        status,
-        now, now
+        priority, status, now, now
       );
 
       const order = this._getOrder(result.lastInsertRowid);
@@ -332,6 +308,15 @@ _poll() {
       this.io.emit('os:created', { order });
 
     } else if (existing.currentStatus !== status) {
+
+      // Nunca regredir OS finalizada manualmente no OS Manager
+      if (existing.currentStatus === 'COMPLETED') return;
+
+      // Não regredir status (ex: IN_PROGRESS → RECEIVED)
+      const currentLevel = STATUS_ORDER[existing.currentStatus] ?? 0;
+      const newLevel     = STATUS_ORDER[status] ?? 0;
+      if (newLevel < currentLevel) return;
+
       const completedAt = status === 'COMPLETED' ? now : null;
       this.db.prepare(
         `UPDATE orders SET currentStatus = ?, completedAt = ?, updatedAt = ? WHERE id = ?`
@@ -359,6 +344,9 @@ _poll() {
       equipmentName: row.equipmentName, serialNumber: row.serialNumber,
       priority: row.priority, currentStatus: row.currentStatus,
       optionalDescription: row.optionalDescription,
+      accessories: row.accessories,
+      hasPreviousDefect: !!row.hasPreviousDefect,
+      previousDefectDescription: row.previousDefectDescription,
       createdAt: row.createdAt, updatedAt: row.updatedAt, completedAt: row.completedAt,
       assignedToUser: row.assignedId ? { id: row.assignedId, fullName: row.assignedFullName, username: row.assignedUsername } : null,
       createdByUser:  row.createdId  ? { id: row.createdId,  fullName: row.createdFullName } : null,
