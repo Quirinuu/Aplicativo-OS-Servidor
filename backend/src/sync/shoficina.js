@@ -11,9 +11,22 @@ const POLL_INTERVAL = parseInt(process.env.SHOFICINA_INTERVAL || '5000');
 const STATUS_ORDER = { RECEIVED: 0, WAITING: 1, IN_PROGRESS: 2, COMPLETED: 3 };
 
 function mapStatus(situacao, pronto) {
-  if (String(pronto || '').trim().toUpperCase() === 'S') return 'COMPLETED';
+  // PRONTO pode ser: "S", "s", "1", ou uma data/hora ("03/03/2026 19:25:41")
+  // Qualquer valor não-vazio e não-nulo significa que a OS foi concluída
+  const prontoVal = String(pronto || '').trim();
+  if (prontoVal && prontoVal.toLowerCase() !== 'null' && prontoVal !== '0' && prontoVal !== 'n') {
+    return 'COMPLETED';
+  }
+
   if (!situacao) return 'RECEIVED';
   const v = String(situacao).toLowerCase().trim();
+
+  // Códigos numéricos do SHOficina (baseado nos dados observados)
+  // 10 = Concluída/Entregue, 3 = Em aberto/Recebida
+  if (v === '10' || v === '9' || v === '8') return 'COMPLETED';
+  if (v === '5' || v === '6' || v === '7')  return 'IN_PROGRESS';
+  if (v === '4')                             return 'WAITING';
+  // Códigos texto (fallback para outros sistemas)
   if (v.includes('conclu') || v.includes('pronto') || v.includes('entreg')) return 'COMPLETED';
   if (v.includes('andamento') || v.includes('execu') || v.includes('reparo'))  return 'IN_PROGRESS';
   if (v.includes('aguard') || v.includes('espera'))                             return 'WAITING';
@@ -91,6 +104,28 @@ if ($rows.Count -eq 0) { Write-Output '[]' } else { $rows | ConvertTo-Json -Dept
     console.error('❌ [SHOficina] Erro ao consultar MDB:', err.message.split('\n')[0]);
     return null;
   }
+}
+
+function queryClientName(codCliente) {
+  if (!codCliente || codCliente === '0' || codCliente === 'null') return null;
+  // Tenta colunas comuns de nome em tabelas de clientes
+  const attempts = [
+    `SELECT NOME FROM [CLIENTES] WHERE CODIGO = '${codCliente}'`,
+    `SELECT NOME FROM [CLIENTES] WHERE COD_CLIENTE = '${codCliente}'`,
+    `SELECT RAZAO FROM [CLIENTES] WHERE CODIGO = '${codCliente}'`,
+    `SELECT NOME_CLIENTE FROM [CLIENTES] WHERE CODIGO = '${codCliente}'`,
+  ];
+  for (const sql of attempts) {
+    try {
+      const rows = queryMDB(sql);
+      if (rows && rows.length > 0) {
+        const row = rows[0];
+        const val = Object.values(row)[0];
+        if (val && val !== '0' && val !== 'null') return String(val).trim();
+      }
+    } catch {}
+  }
+  return null;
 }
 
 function listTables() {
@@ -192,7 +227,6 @@ class SHOficinaSync {
     this.timer     = null;
     this.tableInfo = null;
     this.colMap    = null;
-    this.lastCheck = new Date(0).toISOString();
     this.isWindows = process.platform === 'win32';
   }
 
@@ -228,25 +262,16 @@ class SHOficinaSync {
     const { table } = this.tableInfo;
     const col = this.colMap;
 
-    let sql;
-    if (col.createdAt) {
-      const d   = new Date(this.lastCheck);
-      const fmt = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      sql = `SELECT O.*, C.NOME AS NOME_CLIENTE
-             FROM [${table}] O
-             LEFT JOIN [CLIENTES] C ON C.CODIGO = O.COD_CLIENTE
-             WHERE O.[${col.createdAt}] >= #${fmt}#`;
-    } else {
-      sql = `SELECT O.*, C.NOME AS NOME_CLIENTE
-             FROM [${table}] O
-             LEFT JOIN [CLIENTES] C ON C.CODIGO = O.COD_CLIENTE
-             ORDER BY O.[${col.id}] DESC`;
-    }
+    // Sempre busca TODOS os registros — sem filtro de data.
+    const orderBy = col.id ? `ORDER BY O.[${col.id}] DESC` : '';
+    const sql = `SELECT O.*, C.NOME AS NOME_CLIENTE
+                 FROM [${table}] O
+                 LEFT JOIN [CLIENTES] C ON C.CODIGO = O.COD_CLIENTE
+                 ${orderBy}`;
 
     const rows = queryMDB(sql);
     if (rows === null) return;
 
-    this.lastCheck = new Date().toISOString();
     for (const row of rows) this._syncRow(row);
   }
 
@@ -256,9 +281,14 @@ class SHOficinaSync {
     const extId      = col.id ? String(row[col.id] || '').trim() : null;
     const osNumber   = extId;
 
-    const clientName = row['NOME_CLIENTE']
-      ? String(row['NOME_CLIENTE']).trim()
-      : (col.client ? String(row[col.client] || '').trim() : 'Cliente SHOficina');
+    // NOME_CLIENTE pode voltar como "0" ou "null" quando o JOIN falha
+    const rawNomeCliente = row['NOME_CLIENTE'];
+    const joinNome = (rawNomeCliente && rawNomeCliente !== '0' && rawNomeCliente !== 'null')
+      ? String(rawNomeCliente).trim()
+      : null;
+    // Se JOIN falhou, busca direto na tabela CLIENTES pelo código
+    const codCliente = col.client ? String(row[col.client] || '').trim() : null;
+    const clientName = joinNome || queryClientName(codCliente) || codCliente || 'Cliente SHOficina';
 
     const aparelho   = col.equipment   ? String(row[col.equipment]   || '').trim() : '';
     const marca      = col.brand       ? String(row[col.brand]       || '').trim() : '';
@@ -273,13 +303,14 @@ class SHOficinaSync {
 
     const defect     = col.defect       ? String(row[col.defect]       || '').trim() : null;
     const obs        = col.observations ? String(row[col.observations] || '').trim() : null;
+
     const status     = mapStatus(col.status ? row[col.status] : null, col.pronto ? row[col.pronto] : null);
     const priority   = mapPriority(col.priority ? row[col.priority] : null);
 
     if (!osNumber || !extId) return;
 
     const existing = this.db.prepare(
-      `SELECT id, currentStatus FROM orders WHERE osNumber = ? OR optionalDescription LIKE ?`
+      `SELECT id, currentStatus, clientName, equipmentName FROM orders WHERE osNumber = ? OR optionalDescription LIKE ?`
     ).get(osNumber, `%[shoficina:${extId}]%`);
 
     const now = new Date().toISOString();
@@ -307,23 +338,36 @@ class SHOficinaSync {
       console.log(`✅ [SHOficina] OS importada: #${osNumber} — ${clientName} — ${equipment}`);
       this.io.emit('os:created', { order });
 
-    } else if (existing.currentStatus !== status) {
+    } else {
 
-      // Nunca regredir OS finalizada manualmente no OS Manager
-      if (existing.currentStatus === 'COMPLETED') return;
+      // Verifica se cliente ou equipamento precisam ser corrigidos (ex: vinham como "0")
+      const needsClientFix    = !existing.clientName    || existing.clientName    === '0' || existing.clientName    === 'Cliente SHOficina';
+      const needsEquipFix     = !existing.equipmentName || existing.equipmentName === '0' || existing.equipmentName === 'Equipamento';
+      const clientChanged     = needsClientFix    && clientName    && clientName    !== '0';
+      const equipChanged      = needsEquipFix     && equipment     && equipment     !== '0' && equipment !== 'Equipamento';
 
-      // Não regredir status (ex: IN_PROGRESS → RECEIVED)
-      const currentLevel = STATUS_ORDER[existing.currentStatus] ?? 0;
-      const newLevel     = STATUS_ORDER[status] ?? 0;
-      if (newLevel < currentLevel) return;
+      // Calcula novo status (respeitando regras de não regressão)
+      let newStatus = existing.currentStatus;
+      if (existing.currentStatus !== 'COMPLETED') {
+        const currentLevel = STATUS_ORDER[existing.currentStatus] ?? 0;
+        const newLevel     = STATUS_ORDER[status] ?? 0;
+        if (newLevel >= currentLevel) newStatus = status;
+      }
 
-      const completedAt = status === 'COMPLETED' ? now : null;
+      const statusChanged = newStatus !== existing.currentStatus;
+
+      // Se nada mudou, sai
+      if (!statusChanged && !clientChanged && !equipChanged) return;
+
+      const completedAt = newStatus === 'COMPLETED' ? now : null;
       this.db.prepare(
-        `UPDATE orders SET currentStatus = ?, completedAt = ?, updatedAt = ? WHERE id = ?`
-      ).run(status, completedAt, now, existing.id);
+        `UPDATE orders SET currentStatus = ?, completedAt = ?, clientName = ?, equipmentName = ?, updatedAt = ? WHERE id = ?`
+      ).run(newStatus, completedAt, clientName || existing.clientName, equipment || existing.equipmentName, now, existing.id);
 
       const order = this._getOrder(existing.id);
-      console.log(`🔄 [SHOficina] OS atualizada: #${osNumber} → ${status}`);
+      if (statusChanged)  console.log(`🔄 [SHOficina] OS #${osNumber} status → ${newStatus}`);
+      if (clientChanged)  console.log(`🔄 [SHOficina] OS #${osNumber} cliente corrigido → ${clientName}`);
+      if (equipChanged)   console.log(`🔄 [SHOficina] OS #${osNumber} equipamento corrigido → ${equipment}`);
       this.io.emit('os:updated', { order });
     }
   }

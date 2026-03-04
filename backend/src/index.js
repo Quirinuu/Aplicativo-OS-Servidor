@@ -116,6 +116,11 @@ function initDatabase() {
       comment   TEXT    NOT NULL,
       createdAt TEXT    NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL DEFAULT ''
+    );
   `);
 
   const userCount = db.prepare('SELECT COUNT(*) as n FROM users').get().n;
@@ -604,6 +609,51 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({ message: 'OS Manager Backend', version: '3.0.0', serverIp: LOCAL_IP });
+});
+
+// ============== ROTAS SETTINGS / SHOFICINA ==============
+
+// GET /api/settings/shoficina — retorna configuração atual
+app.get('/api/settings/shoficina', authMiddleware, (req, res) => {
+  const pathRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_path'").get();
+  const passRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get();
+  res.json({
+    path: pathRow?.value || process.env.SHOFICINA_PATH || 'C:\\SHARMAQ\\SHOficina\\dados.mdb',
+    hasPassword: !!(passRow?.value || process.env.SHOFICINA_PASS),
+  });
+});
+
+// PUT /api/settings/shoficina — salva e recarrega sync
+app.put('/api/settings/shoficina', authMiddleware, (req, res) => {
+  const { path: mdbPath, password: mdbPass } = req.body;
+  if (!mdbPath) return res.status(400).json({ error: 'Caminho do arquivo é obrigatório' });
+
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('shoficina_path', ?)").run(mdbPath);
+  if (mdbPass !== undefined && mdbPass !== null) {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('shoficina_pass', ?)").run(mdbPass);
+  }
+
+  const savedPass = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get()?.value
+    || process.env.SHOFICINA_PASS || '';
+  const finalPass = (mdbPass !== undefined && mdbPass !== null) ? mdbPass : savedPass;
+
+  shoSync.reload(mdbPath, finalPass);
+  console.log(`⚙️  [Settings] SHOficina reconfigurado: ${mdbPath}`);
+  res.json({ ok: true, message: 'Configuração salva. Sincronização reiniciada.' });
+});
+
+// POST /api/settings/shoficina/test — testa conexão sem salvar
+app.post('/api/settings/shoficina/test', authMiddleware, (req, res) => {
+  const { path: mdbPath, password: mdbPass } = req.body;
+  if (!mdbPath) return res.status(400).json({ error: 'Caminho obrigatório' });
+
+  const { testConnection } = require('./sync/shoficina');
+  const result = testConnection(mdbPath, mdbPass || '');
+  if (result.ok) {
+    res.json({ ok: true, message: `Conexão OK! Tabelas: ${result.tables?.join(', ') || 'nenhuma'}` });
+  } else {
+    res.status(400).json({ ok: false, error: result.error || 'Falha na conexão' });
+  }
 });
 
 // SPA catch-all

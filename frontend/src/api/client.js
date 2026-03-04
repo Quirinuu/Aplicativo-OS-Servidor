@@ -1,16 +1,8 @@
-// frontend/src/api/client.js  ← APP SERVIDOR
-// Detecta automaticamente o host pelo qual o browser acessou o app.
-// Funciona tanto em localhost quanto quando acessado por IP na rede (ex: 192.168.0.100:5000)
-
+// frontend/src/api/client.js
 function getBaseURL() {
-  // Dev com Vite (variável de ambiente explícita)
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL.replace(/\/$/, '');
   }
-
-  // Produção: usa o mesmo host/porta que o browser usou para abrir o app
-  // Se acessado como http://192.168.0.100:5000 → API em http://192.168.0.100:5000
-  // Se acessado como http://localhost:5000     → API em http://localhost:5000
   const { protocol, hostname, port } = window.location;
   const p = port || (protocol === 'https:' ? '443' : '80');
   return `${protocol}//${hostname}:${p}`;
@@ -97,4 +89,16 @@ export const serviceOrders = {
   },
 };
 
-export default { auth, users, serviceOrders };
+export const settings = {
+  getShoficina: async () => fetchAPI('/settings/shoficina'),
+  saveShoficina: async (data) => fetchAPI('/settings/shoficina', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  testShoficina: async (data) => fetchAPI('/settings/shoficina/test', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+};
+
+export default { auth, users, serviceOrders, settings };

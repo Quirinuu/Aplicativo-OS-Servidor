@@ -1,18 +1,9 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
-  Calendar,
-  User,
-  Clock,
-  ExternalLink,
-  AlertTriangle,
-  GripVertical,
-  Zap,
-  ChevronUp,
-  ChevronDown
+  AlertTriangle, Zap, Clock, ArrowDown,
+  GripVertical, ChevronUp, ChevronDown, ExternalLink
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -20,64 +11,74 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import StatusBadge from "@/components/os/StatusBadge";
 import { safeFormatDate } from '@/utils/date';
 
 const priorityConfig = {
   URGENT: {
-    label: "Urgente",
-    borderColor: "border-red-500",
-    lightBg: "bg-red-50",
+    label: 'Urgente',
+    bar: 'bg-red-500',
+    bg: 'bg-red-50 hover:bg-red-100',
+    border: 'border-red-200',
+    text: 'text-red-700',
     icon: AlertTriangle,
-    gradient: "from-red-500 to-red-600"
+    gradient: 'from-red-500 to-red-600',
   },
   HIGH: {
-    label: "Alta",
-    borderColor: "border-orange-500",
-    lightBg: "bg-orange-50",
+    label: 'Alta',
+    bar: 'bg-orange-400',
+    bg: 'bg-orange-50 hover:bg-orange-100',
+    border: 'border-orange-200',
+    text: 'text-orange-700',
     icon: Zap,
-    gradient: "from-orange-500 to-orange-600"
+    gradient: 'from-orange-500 to-orange-600',
   },
   MEDIUM: {
-    label: "Média",
-    borderColor: "border-yellow-500",
-    lightBg: "bg-yellow-50",
+    label: 'Média',
+    bar: 'bg-yellow-400',
+    bg: 'bg-yellow-50 hover:bg-yellow-100',
+    border: 'border-yellow-200',
+    text: 'text-yellow-700',
     icon: Clock,
-    gradient: "from-yellow-500 to-yellow-600"
+    gradient: 'from-yellow-500 to-yellow-600',
   },
   LOW: {
-    label: "Baixa",
-    borderColor: "border-green-500",
-    lightBg: "bg-green-50",
-    icon: Clock,
-    gradient: "from-green-500 to-green-600"
-  }
+    label: 'Baixa',
+    bar: 'bg-green-400',
+    bg: 'bg-green-50 hover:bg-green-100',
+    border: 'border-green-200',
+    text: 'text-green-700',
+    icon: ArrowDown,
+    gradient: 'from-green-500 to-green-600',
+  },
 };
 
-function OSCardGridItem({
-  order,
-  index,
-  total,
-  onPriorityChange,
-  onMoveUp,
-  onMoveDown,
-  onDragStart,
-  onDragEnd,
-  onDragEnter,
-  onDragOver,
-  onDrop,
-  dragOverIndex,
-  draggingIndex,
-}) {
-  const [isHovered, setIsHovered] = useState(false);
+const statusLabel = {
+  RECEIVED: 'Recebido',
+  WAITING: 'Aguardando',
+  IN_PROGRESS: 'Em andamento',
+  COMPLETED: 'Concluído',
+  ANALYSIS: 'Em análise',
+  MAINTENANCE: 'Manutenção',
+  WAITING_PARTS: 'Ag. Peças',
+  READY_FOR_PICKUP: 'Pronto',
+};
 
+function OSCardItem({
+  order, index, total, zoom,
+  onPriorityChange, onMoveUp, onMoveDown,
+  onDragStart, onDragEnd, onDragEnter, onDragOver, onDrop,
+  dragOverIndex, draggingIndex,
+}) {
+  const [hovered, setHovered] = useState(false);
   if (!order) return null;
 
-  const config = priorityConfig[order.priority] || priorityConfig.MEDIUM;
-  const PriorityIcon = config.icon;
-
+  const cfg = priorityConfig[order.priority] || priorityConfig.MEDIUM;
+  const PriorityIcon = cfg.icon;
   const isDragging = draggingIndex === index;
   const isDragOver = dragOverIndex === index && draggingIndex !== index;
+
+  // zoom >= 1 = bigger cards, zoom <= -1 = smaller cards
+  const isSmall = zoom <= -1;
 
   return (
     <div
@@ -87,162 +88,149 @@ function OSCardGridItem({
       onDragEnter={(e) => { e.preventDefault(); onDragEnter(index); }}
       onDragOver={(e) => { e.preventDefault(); onDragOver(e); }}
       onDrop={(e) => { e.preventDefault(); onDrop(index); }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      className={`h-full transition-all duration-150 rounded-xl
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className={`
+        transition-all duration-150 rounded-lg
         ${isDragging ? 'opacity-30 scale-95 cursor-grabbing' : 'cursor-default'}
-        ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 scale-[1.02]' : ''}
+        ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-1 scale-[1.02]' : ''}
       `}
     >
       <motion.div
         layout
-        initial={{ opacity: 0, scale: 0.9 }}
+        initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-        className="h-full"
+        transition={{ type: 'spring', stiffness: 350, damping: 30 }}
       >
-        <Card
-          className={`h-full border-l-4 ${config.borderColor} hover:shadow-xl transition-shadow duration-200 ${config.lightBg}`}
-        >
-          <CardContent className="p-4 h-full flex flex-col">
+        <div className={`
+          relative rounded-lg border overflow-hidden
+          ${cfg.bg} ${cfg.border}
+          transition-shadow duration-150
+          ${hovered ? 'shadow-md' : 'shadow-sm'}
+        `}>
+          <div className={`absolute left-0 top-0 bottom-0 w-1 ${cfg.bar}`} />
 
-            {/* Header */}
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-
-                {/* Coluna de controles: ▲ grip ▼ */}
-                <div
-                  className="flex flex-col items-center gap-0 select-none flex-shrink-0"
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onMoveUp(index); }}
-                    disabled={index === 0}
-                    className={`p-1 rounded transition-colors
-                      ${index === 0 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}
-                    `}
-                    title="Mover para cima"
-                  >
-                    <ChevronUp className="w-3.5 h-3.5" />
-                  </button>
-
-                  <div
-                    className="text-slate-300 hover:text-blue-400 cursor-grab active:cursor-grabbing py-0.5 px-1"
-                    title="Arrastar para reorganizar"
-                  >
-                    <GripVertical className="w-4 h-4" />
-                  </div>
-
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onMoveDown(index); }}
-                    disabled={index === total - 1}
-                    className={`p-1 rounded transition-colors
-                      ${index === total - 1 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}
-                    `}
-                    title="Mover para baixo"
-                  >
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <h3 className="font-bold text-lg text-slate-800 truncate">
-                    #{order.osNumber}
-                  </h3>
-                  <p className="text-sm text-slate-600 truncate">
-                    {order.equipmentName}
-                  </p>
-                </div>
-              </div>
-
-              {/* Dropdown de prioridade */}
-              <div onMouseDown={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      className={`flex-shrink-0 w-12 h-12 rounded-xl bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-md hover:shadow-lg transition-all cursor-pointer`}
-                      title={`Prioridade: ${config.label}`}
-                    >
-                      <PriorityIcon className="w-6 h-6 text-white" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'URGENT')} className="cursor-pointer">
-                      <AlertTriangle className="w-4 h-4 mr-2 text-red-500" /> Urgente
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'HIGH')} className="cursor-pointer">
-                      <Zap className="w-4 h-4 mr-2 text-orange-500" /> Alta
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'MEDIUM')} className="cursor-pointer">
-                      <Clock className="w-4 h-4 mr-2 text-yellow-500" /> Média
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'LOW')} className="cursor-pointer">
-                      <Clock className="w-4 h-4 mr-2 text-green-500" /> Baixa
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-
-            {/* Status */}
-            <div className="mb-3">
-              <StatusBadge status={order.currentStatus} />
-            </div>
-
-            {/* Detalhes */}
-            <div className="space-y-2 flex-1 text-sm">
-              <div className="flex items-center gap-2 text-slate-700">
-                <User className="w-4 h-4 flex-shrink-0" />
-                <span className="truncate font-medium">{order.clientName}</span>
-              </div>
-              <div className="flex items-center gap-2 text-slate-600">
-                <Calendar className="w-4 h-4 flex-shrink-0" />
-                <span>{safeFormatDate(order.createdAt)}</span>
-              </div>
-              <div className="flex items-center gap-2 text-slate-600">
-                <Clock className="w-4 h-4 flex-shrink-0" />
-                <span className="truncate">
-                  {order.assignedToUser?.fullName || 'Não atribuído'}
-                </span>
-              </div>
-              {order.equipmentClass && (
-                <div className="text-slate-600">
-                  <span className="font-medium">Classe: </span>
-                  <span>{order.equipmentClass}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Rodapé — botão só aparece no hover */}
-            <div
-              className="mt-4 pt-3 border-t border-slate-200"
-              onMouseDown={(e) => e.stopPropagation()}
-            >
+          <div className={`pl-3 pr-2 ${isSmall ? 'py-1.5' : 'py-2.5'}`}>
+            <div className="flex items-center gap-1.5">
+              {/* Reorder controls */}
               <div
-                className={`transition-all duration-200 overflow-hidden ${
-                  isHovered ? 'opacity-100 max-h-12' : 'opacity-0 max-h-0'
-                }`}
+                className="flex flex-col items-center flex-shrink-0"
+                onMouseDown={(e) => e.stopPropagation()}
               >
-                <Link to={`/os/${order.id}`} className="w-full">
-                  <Button variant="outline" size="sm" className="w-full hover:bg-slate-100">
-                    <ExternalLink className="w-4 h-4 mr-2" />
-                    Ver Detalhes
-                  </Button>
-                </Link>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onMoveUp(index); }}
+                  disabled={index === 0}
+                  className={`transition-colors ${index === 0 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-300 hover:text-blue-500'}`}
+                >
+                  <ChevronUp className="w-3 h-3" />
+                </button>
+                <div className="text-slate-200 hover:text-blue-300 cursor-grab active:cursor-grabbing">
+                  <GripVertical className="w-3 h-3" />
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onMoveDown(index); }}
+                  disabled={index === total - 1}
+                  className={`transition-colors ${index === total - 1 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-300 hover:text-blue-500'}`}
+                >
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-1">
+                  <span className={`font-bold text-slate-800 truncate ${isSmall ? 'text-xs' : 'text-sm'}`}>
+                    #{order.osNumber}
+                  </span>
+                  <div onMouseDown={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          className={`
+                            flex-shrink-0 rounded-md bg-gradient-to-br ${cfg.gradient}
+                            flex items-center justify-center shadow-sm hover:shadow-md transition-all
+                            ${isSmall ? 'w-5 h-5' : 'w-6 h-6'}
+                          `}
+                          title={`Prioridade: ${cfg.label}`}
+                        >
+                          <PriorityIcon className={isSmall ? 'w-2.5 h-2.5 text-white' : 'w-3 h-3 text-white'} />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="text-sm">
+                        {Object.entries(priorityConfig).map(([key, c]) => {
+                          const Icon = c.icon;
+                          return (
+                            <DropdownMenuItem
+                              key={key}
+                              onClick={() => onPriorityChange(order.id, key)}
+                              className="cursor-pointer"
+                            >
+                              <Icon className={`w-3.5 h-3.5 mr-2 ${c.text}`} />
+                              {c.label}
+                            </DropdownMenuItem>
+                          );
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </div>
+
+                <p className={`text-slate-600 truncate font-medium mt-0.5 ${isSmall ? 'text-xs leading-tight' : 'text-xs'}`}>
+                  {order.clientName}
+                </p>
+
+                {!isSmall && (
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <span className="text-xs text-slate-400">
+                      {safeFormatDate(order.createdAt)}
+                    </span>
+                    <span className={`text-xs font-medium px-1 py-0.5 rounded-full ${cfg.text} bg-white/60`}>
+                      {statusLabel[order.currentStatus] || order.currentStatus}
+                    </span>
+                  </div>
+                )}
+
+                {isSmall && (
+                  <p className="text-xs text-slate-400 leading-tight">
+                    {safeFormatDate(order.createdAt)}
+                  </p>
+                )}
               </div>
             </div>
 
-          </CardContent>
-        </Card>
+            {/* Hover action */}
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              className={`transition-all duration-150 overflow-hidden ${
+                hovered ? 'max-h-7 opacity-100 mt-1.5' : 'max-h-0 opacity-0 mt-0'
+              }`}
+            >
+              <Link to={`/os/${order.id}`}>
+                <button className="w-full text-xs flex items-center justify-center gap-1 py-0.5 rounded bg-white/80 hover:bg-white text-slate-600 hover:text-blue-600 border border-slate-200 transition-colors">
+                  <ExternalLink className="w-3 h-3" />
+                  Ver OS
+                </button>
+              </Link>
+            </div>
+          </div>
+        </div>
       </motion.div>
     </div>
   );
 }
 
-export default function OSCardGrid({ orders, onReorder, onPriorityChange }) {
+// zoom: +2 = poucos cards grandes | 0 = padrão | -2 = muitos cards pequenos
+const zoomGridCols = {
+  '-2': 'grid-cols-4 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9',
+  '-1': 'grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7',
+   '0': 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5',
+   '1': 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4',
+   '2': 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3',
+};
+
+export default function OSCardGrid({ orders, onReorder, onPriorityChange, zoom = 0 }) {
   const draggingIndexRef = useRef(null);
   const dragOverIndexRef = useRef(null);
-
   const [draggingIndex, setDraggingIndex] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
 
@@ -265,22 +253,18 @@ export default function OSCardGrid({ orders, onReorder, onPriorityChange }) {
     dragOverIndexRef.current = null;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(index));
-    requestAnimationFrame(() => {
-      setDraggingIndex(index);
-    });
+    requestAnimationFrame(() => setDraggingIndex(index));
   }, []);
 
   const handleDragEnd = useCallback(() => {
     const from = draggingIndexRef.current;
-    const to = dragOverIndexRef.current;
-
+    const to   = dragOverIndexRef.current;
     if (from !== null && to !== null && from !== to) {
       const newOrders = [...orders];
       const [removed] = newOrders.splice(from, 1);
       newOrders.splice(to, 0, removed);
       onReorder(newOrders);
     }
-
     draggingIndexRef.current = null;
     dragOverIndexRef.current = null;
     setDraggingIndex(null);
@@ -294,23 +278,20 @@ export default function OSCardGrid({ orders, onReorder, onPriorityChange }) {
     }
   }, []);
 
-  const handleDragOver = useCallback((e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  }, []);
+  const handleDragOver  = useCallback((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, []);
+  const handleDrop      = useCallback((index) => { dragOverIndexRef.current = index; }, []);
 
-  const handleDrop = useCallback((index) => {
-    dragOverIndexRef.current = index;
-  }, []);
+  const colsClass = zoomGridCols[String(zoom)] || zoomGridCols['0'];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+    <div className={`grid ${colsClass} gap-2`}>
       {orders.map((order, index) => (
-        <OSCardGridItem
+        <OSCardItem
           key={order.id}
           order={order}
           index={index}
           total={orders.length}
+          zoom={zoom}
           onPriorityChange={onPriorityChange}
           onMoveUp={handleMoveUp}
           onMoveDown={handleMoveDown}
