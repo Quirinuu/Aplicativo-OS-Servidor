@@ -307,10 +307,28 @@ class SHOficinaSync {
     const status     = mapStatus(col.status ? row[col.status] : null, col.pronto ? row[col.pronto] : null);
     const priority   = mapPriority(col.priority ? row[col.priority] : null);
 
+    // Usa a data ENTRADA do SHOficina como createdAt
+    // Armazena como string ISO sem fuso (naive) para preservar o horário exato do SHOficina
+    let shoCreatedAt = null;
+    const rawEntrada = col.createdAt ? String(row[col.createdAt] || '').trim() : '';
+    if (rawEntrada && rawEntrada !== 'null') {
+      // Formato BR: DD/MM/YYYY HH:MM:SS  ou  DD/MM/YYYY HH:MM  ou  DD/MM/YYYY
+      const brMatch = rawEntrada.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+      if (brMatch) {
+        const [, d, m, y, hh = '00', mm = '00', ss = '00'] = brMatch;
+        // Sem "Z" no final — preserva horário local sem converter para UTC
+        shoCreatedAt = `${y}-${m}-${d}T${hh}:${mm}:${ss}`;
+      } else if (rawEntrada) {
+        // Fallback para outros formatos
+        const parsed = new Date(rawEntrada);
+        if (!isNaN(parsed.getTime())) shoCreatedAt = rawEntrada;
+      }
+    }
+
     if (!osNumber || !extId) return;
 
     const existing = this.db.prepare(
-      `SELECT id, currentStatus, clientName, equipmentName FROM orders WHERE osNumber = ? OR optionalDescription LIKE ?`
+      `SELECT id, currentStatus, clientName, equipmentName, createdAt, updatedAt FROM orders WHERE osNumber = ? OR optionalDescription LIKE ?`
     ).get(osNumber, `%[shoficina:${extId}]%`);
 
     const now = new Date().toISOString();
@@ -331,7 +349,7 @@ class SHOficinaSync {
         defect ? 1 : 0,
         defect      || null,
         `[shoficina:${extId}]${obs ? ' ' + obs : ''}`.trim(),
-        priority, status, now, now
+        priority, status, shoCreatedAt || now, now
       );
 
       const order = this._getOrder(result.lastInsertRowid);
@@ -360,9 +378,10 @@ class SHOficinaSync {
       if (!statusChanged && !clientChanged && !equipChanged) return;
 
       const completedAt = newStatus === 'COMPLETED' ? now : null;
+      // Sempre atualiza createdAt com o valor real do SHOficina (campo ENTRADA)
       this.db.prepare(
-        `UPDATE orders SET currentStatus = ?, completedAt = ?, clientName = ?, equipmentName = ?, updatedAt = ? WHERE id = ?`
-      ).run(newStatus, completedAt, clientName || existing.clientName, equipment || existing.equipmentName, now, existing.id);
+        `UPDATE orders SET currentStatus = ?, completedAt = ?, clientName = ?, equipmentName = ?, createdAt = ?, updatedAt = ? WHERE id = ?`
+      ).run(newStatus, completedAt, clientName || existing.clientName, equipment || existing.equipmentName, shoCreatedAt || existing.createdAt, now, existing.id);
 
       const order = this._getOrder(existing.id);
       if (statusChanged)  console.log(`🔄 [SHOficina] OS #${osNumber} status → ${newStatus}`);

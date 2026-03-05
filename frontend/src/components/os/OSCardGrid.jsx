@@ -1,9 +1,19 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion } from "framer-motion";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
-  AlertTriangle, Zap, Clock, ArrowDown,
-  GripVertical, ChevronUp, ChevronDown, ExternalLink
+  Calendar,
+  User,
+  Clock,
+  Timer,
+  ExternalLink,
+  AlertTriangle,
+  GripVertical,
+  Zap,
+  ChevronUp,
+  ChevronDown
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -11,74 +21,74 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import StatusBadge from "@/components/os/StatusBadge";
 import { safeFormatDate } from '@/utils/date';
 
 const priorityConfig = {
-  URGENT: {
-    label: 'Urgente',
-    bar: 'bg-red-500',
-    bg: 'bg-red-50 hover:bg-red-100',
-    border: 'border-red-200',
-    text: 'text-red-700',
-    icon: AlertTriangle,
-    gradient: 'from-red-500 to-red-600',
-  },
-  HIGH: {
-    label: 'Alta',
-    bar: 'bg-orange-400',
-    bg: 'bg-orange-50 hover:bg-orange-100',
-    border: 'border-orange-200',
-    text: 'text-orange-700',
-    icon: Zap,
-    gradient: 'from-orange-500 to-orange-600',
-  },
-  MEDIUM: {
-    label: 'Média',
-    bar: 'bg-yellow-400',
-    bg: 'bg-yellow-50 hover:bg-yellow-100',
-    border: 'border-yellow-200',
-    text: 'text-yellow-700',
-    icon: Clock,
-    gradient: 'from-yellow-500 to-yellow-600',
-  },
-  LOW: {
-    label: 'Baixa',
-    bar: 'bg-green-400',
-    bg: 'bg-green-50 hover:bg-green-100',
-    border: 'border-green-200',
-    text: 'text-green-700',
-    icon: ArrowDown,
-    gradient: 'from-green-500 to-green-600',
-  },
+  URGENT: { label: "Urgente", borderColor: "border-red-500",    lightBg: "bg-red-50",    icon: AlertTriangle, gradient: "from-red-500 to-red-600"    },
+  HIGH:   { label: "Alta",    borderColor: "border-orange-500", lightBg: "bg-orange-50", icon: Zap,           gradient: "from-orange-500 to-orange-600" },
+  MEDIUM: { label: "Média",   borderColor: "border-yellow-500", lightBg: "bg-yellow-50", icon: Clock,         gradient: "from-yellow-500 to-yellow-600" },
+  LOW:    { label: "Baixa",   borderColor: "border-green-500",  lightBg: "bg-green-50",  icon: Clock,         gradient: "from-green-500 to-green-600"  },
 };
 
-const statusLabel = {
-  RECEIVED: 'Recebido',
-  WAITING: 'Aguardando',
-  IN_PROGRESS: 'Em andamento',
-  COMPLETED: 'Concluído',
-  ANALYSIS: 'Em análise',
-  MAINTENANCE: 'Manutenção',
-  WAITING_PARTS: 'Ag. Peças',
-  READY_FOR_PICKUP: 'Pronto',
-};
+// Calcula o tempo decorrido desde createdAt (que vem do campo ENTRADA do SHOficina)
+function useElapsedTime(createdAt) {
+  const [elapsed, setElapsed] = React.useState('');
 
-function OSCardItem({
-  order, index, total, zoom,
-  onPriorityChange, onMoveUp, onMoveDown,
+  React.useEffect(() => {
+    function calc() {
+      if (!createdAt) return setElapsed('');
+      const diff = Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000);
+      if (diff < 60) return setElapsed('< 1min');
+      const mins  = Math.floor(diff / 60);
+      const hours = Math.floor(mins / 60);
+      const days  = Math.floor(hours / 24);
+      if (days >= 1) {
+        const remH = hours % 24;
+        setElapsed(remH > 0 ? `${days}d ${remH}h` : `${days}d`);
+      } else if (hours >= 1) {
+        const remM = mins % 60;
+        setElapsed(remM > 0 ? `${hours}h ${remM}min` : `${hours}h`);
+      } else {
+        setElapsed(`${mins}min`);
+      }
+    }
+    calc();
+    const id = setInterval(calc, 60000);
+    return () => clearInterval(id);
+  }, [createdAt]);
+
+  return elapsed;
+}
+
+// zoomLevel: -2 (mini) … 0 (padrão) … +2 (grande)
+function getGridClass(zoomLevel) {
+  switch (zoomLevel) {
+    case -2: return 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-9';
+    case -1: return 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6';
+    case  0: return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
+    case  1: return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3';
+    case  2: return 'grid-cols-1 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-2';
+    default: return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
+  }
+}
+
+function OSCardGridItem({
+  order, index, total, onPriorityChange,
+  onMoveUp, onMoveDown,
   onDragStart, onDragEnd, onDragEnter, onDragOver, onDrop,
-  dragOverIndex, draggingIndex,
+  dragOverIndex, draggingIndex, compact,
 }) {
-  const [hovered, setHovered] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const elapsed = useElapsedTime(order?.createdAt);
+  const navigate = useNavigate();
+
   if (!order) return null;
 
-  const cfg = priorityConfig[order.priority] || priorityConfig.MEDIUM;
-  const PriorityIcon = cfg.icon;
+  const config = priorityConfig[order.priority] || priorityConfig.MEDIUM;
+  const PriorityIcon = config.icon;
   const isDragging = draggingIndex === index;
   const isDragOver = dragOverIndex === index && draggingIndex !== index;
-
-  // zoom >= 1 = bigger cards, zoom <= -1 = smaller cards
-  const isSmall = zoom <= -1;
 
   return (
     <div
@@ -88,151 +98,169 @@ function OSCardItem({
       onDragEnter={(e) => { e.preventDefault(); onDragEnter(index); }}
       onDragOver={(e) => { e.preventDefault(); onDragOver(e); }}
       onDrop={(e) => { e.preventDefault(); onDrop(index); }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      className={`
-        transition-all duration-150 rounded-lg
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      className={`h-full transition-all duration-150 rounded-xl
         ${isDragging ? 'opacity-30 scale-95 cursor-grabbing' : 'cursor-default'}
-        ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-1 scale-[1.02]' : ''}
+        ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 scale-[1.02]' : ''}
       `}
     >
       <motion.div
         layout
-        initial={{ opacity: 0, scale: 0.95 }}
+        initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ type: 'spring', stiffness: 350, damping: 30 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        className="h-full"
       >
-        <div className={`
-          relative rounded-lg border overflow-hidden
-          ${cfg.bg} ${cfg.border}
-          transition-shadow duration-150
-          ${hovered ? 'shadow-md' : 'shadow-sm'}
-        `}>
-          <div className={`absolute left-0 top-0 bottom-0 w-1 ${cfg.bar}`} />
+        <Card className={`h-full border-l-4 ${config.borderColor} hover:shadow-xl transition-shadow duration-200 ${config.lightBg}`}>
+          <CardContent className={`h-full flex flex-col ${compact ? 'p-2' : 'p-4'}`}>
 
-          <div className={`pl-3 pr-2 ${isSmall ? 'py-1.5' : 'py-2.5'}`}>
-            <div className="flex items-center gap-1.5">
-              {/* Reorder controls */}
+            {/* Header: número + ícone prioridade */}
+            <div className={`flex items-start justify-between ${compact ? 'mb-1' : 'mb-3'}`}>
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+
+                {/* Controles de ordem — só no modo normal */}
+                {!compact && (
+                  <div
+                    className="flex flex-col items-center gap-0 select-none flex-shrink-0"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMoveUp(index); }}
+                      disabled={index === 0}
+                      className={`p-1 rounded transition-colors ${index === 0 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}
+                      title="Mover para cima"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <div className="text-slate-300 hover:text-blue-400 cursor-grab active:cursor-grabbing py-0.5 px-1">
+                      <GripVertical className="w-4 h-4" />
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMoveDown(index); }}
+                      disabled={index === total - 1}
+                      className={`p-1 rounded transition-colors ${index === total - 1 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}
+                      title="Mover para baixo"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex-1 min-w-0">
+                  <h3
+                    className={`font-bold text-blue-700 hover:text-blue-900 hover:underline cursor-pointer truncate ${compact ? 'text-xs' : 'text-lg'}`}
+                    onClick={(e) => { e.stopPropagation(); navigate(`/os/${order.id}`); }}
+                    title="Ver detalhes da OS"
+                  >
+                    #{order.osNumber}
+                  </h3>
+                  {!compact && (
+                    <p className="text-sm text-slate-600 truncate">{order.equipmentName}</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Dropdown de prioridade */}
+              <div onMouseDown={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className={`flex-shrink-0 rounded-xl bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-md hover:shadow-lg transition-all cursor-pointer ${compact ? 'w-7 h-7' : 'w-12 h-12'}`}
+                      title={`Prioridade: ${config.label}`}
+                    >
+                      <PriorityIcon className={compact ? 'w-3.5 h-3.5 text-white' : 'w-6 h-6 text-white'} />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'URGENT')} className="cursor-pointer">
+                      <AlertTriangle className="w-4 h-4 mr-2 text-red-500" /> Urgente
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'HIGH')} className="cursor-pointer">
+                      <Zap className="w-4 h-4 mr-2 text-orange-500" /> Alta
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'MEDIUM')} className="cursor-pointer">
+                      <Clock className="w-4 h-4 mr-2 text-yellow-500" /> Média
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onPriorityChange(order.id, 'LOW')} className="cursor-pointer">
+                      <Clock className="w-4 h-4 mr-2 text-green-500" /> Baixa
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
+
+            {/* Status */}
+            <div className={compact ? 'mb-1' : 'mb-3'}>
+              <StatusBadge status={order.currentStatus} />
+            </div>
+
+            {/* Detalhes */}
+            {compact ? (
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-slate-700 truncate font-medium">{order.clientName}</div>
+                {elapsed && (
+                  <div className="text-xs text-blue-600 mt-0.5 flex items-center gap-1 font-semibold">
+                    <Timer className="w-3 h-3 flex-shrink-0" />
+                    <span>{elapsed}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2 flex-1 text-sm">
+                <div className="flex items-center gap-2 text-slate-700">
+                  <User className="w-4 h-4 flex-shrink-0" />
+                  <span className="truncate font-medium">{order.clientName}</span>
+                </div>
+                <div className="flex items-center gap-2 text-slate-600">
+                  <Calendar className="w-4 h-4 flex-shrink-0" />
+                  <span>{safeFormatDate(order.createdAt)}</span>
+                </div>
+                {elapsed && (
+                  <div className="flex items-center gap-2">
+                    <Timer className="w-4 h-4 flex-shrink-0 text-blue-500" />
+                    <span className="font-semibold text-blue-700">{elapsed}</span>
+                    <span className="text-xs text-slate-400">em aberto</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 text-slate-600">
+                  <Clock className="w-4 h-4 flex-shrink-0" />
+                  <span className="truncate">{order.assignedToUser?.fullName || 'Não atribuído'}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Rodapé — botão aparece no hover, só no modo normal */}
+            {!compact && (
               <div
-                className="flex flex-col items-center flex-shrink-0"
+                className="mt-4 pt-3 border-t border-slate-200"
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                <button
-                  onClick={(e) => { e.stopPropagation(); onMoveUp(index); }}
-                  disabled={index === 0}
-                  className={`transition-colors ${index === 0 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-300 hover:text-blue-500'}`}
-                >
-                  <ChevronUp className="w-3 h-3" />
-                </button>
-                <div className="text-slate-200 hover:text-blue-300 cursor-grab active:cursor-grabbing">
-                  <GripVertical className="w-3 h-3" />
+                <div className={`transition-all duration-200 overflow-hidden ${isHovered ? 'opacity-100 max-h-12' : 'opacity-0 max-h-0'}`}>
+                  <Link to={`/os/${order.id}`} className="w-full">
+                    <Button variant="outline" size="sm" className="w-full hover:bg-slate-100">
+                      <ExternalLink className="w-4 h-4 mr-2" />
+                      Ver Detalhes
+                    </Button>
+                  </Link>
                 </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onMoveDown(index); }}
-                  disabled={index === total - 1}
-                  className={`transition-colors ${index === total - 1 ? 'text-slate-200 cursor-not-allowed' : 'text-slate-300 hover:text-blue-500'}`}
-                >
-                  <ChevronDown className="w-3 h-3" />
-                </button>
               </div>
+            )}
 
-              {/* Content */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-1">
-                  <span className={`font-bold text-slate-800 truncate ${isSmall ? 'text-xs' : 'text-sm'}`}>
-                    #{order.osNumber}
-                  </span>
-                  <div onMouseDown={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          className={`
-                            flex-shrink-0 rounded-md bg-gradient-to-br ${cfg.gradient}
-                            flex items-center justify-center shadow-sm hover:shadow-md transition-all
-                            ${isSmall ? 'w-5 h-5' : 'w-6 h-6'}
-                          `}
-                          title={`Prioridade: ${cfg.label}`}
-                        >
-                          <PriorityIcon className={isSmall ? 'w-2.5 h-2.5 text-white' : 'w-3 h-3 text-white'} />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="text-sm">
-                        {Object.entries(priorityConfig).map(([key, c]) => {
-                          const Icon = c.icon;
-                          return (
-                            <DropdownMenuItem
-                              key={key}
-                              onClick={() => onPriorityChange(order.id, key)}
-                              className="cursor-pointer"
-                            >
-                              <Icon className={`w-3.5 h-3.5 mr-2 ${c.text}`} />
-                              {c.label}
-                            </DropdownMenuItem>
-                          );
-                        })}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </div>
-
-                <p className={`text-slate-600 truncate font-medium mt-0.5 ${isSmall ? 'text-xs leading-tight' : 'text-xs'}`}>
-                  {order.clientName}
-                </p>
-
-                {!isSmall && (
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className="text-xs text-slate-400">
-                      {safeFormatDate(order.createdAt)}
-                    </span>
-                    <span className={`text-xs font-medium px-1 py-0.5 rounded-full ${cfg.text} bg-white/60`}>
-                      {statusLabel[order.currentStatus] || order.currentStatus}
-                    </span>
-                  </div>
-                )}
-
-                {isSmall && (
-                  <p className="text-xs text-slate-400 leading-tight">
-                    {safeFormatDate(order.createdAt)}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Hover action */}
-            <div
-              onMouseDown={(e) => e.stopPropagation()}
-              className={`transition-all duration-150 overflow-hidden ${
-                hovered ? 'max-h-7 opacity-100 mt-1.5' : 'max-h-0 opacity-0 mt-0'
-              }`}
-            >
-              <Link to={`/os/${order.id}`}>
-                <button className="w-full text-xs flex items-center justify-center gap-1 py-0.5 rounded bg-white/80 hover:bg-white text-slate-600 hover:text-blue-600 border border-slate-200 transition-colors">
-                  <ExternalLink className="w-3 h-3" />
-                  Ver OS
-                </button>
-              </Link>
-            </div>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       </motion.div>
     </div>
   );
 }
 
-// zoom: +2 = poucos cards grandes | 0 = padrão | -2 = muitos cards pequenos
-const zoomGridCols = {
-  '-2': 'grid-cols-4 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9',
-  '-1': 'grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7',
-   '0': 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5',
-   '1': 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4',
-   '2': 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3',
-};
-
-export default function OSCardGrid({ orders, onReorder, onPriorityChange, zoom = 0 }) {
+export default function OSCardGrid({ orders, onReorder, onPriorityChange, zoomLevel = 0 }) {
   const draggingIndexRef = useRef(null);
   const dragOverIndexRef = useRef(null);
   const [draggingIndex, setDraggingIndex] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
+
+  const compact = zoomLevel <= -1;
 
   const handleMoveUp = useCallback((index) => {
     if (index === 0) return;
@@ -258,7 +286,7 @@ export default function OSCardGrid({ orders, onReorder, onPriorityChange, zoom =
 
   const handleDragEnd = useCallback(() => {
     const from = draggingIndexRef.current;
-    const to   = dragOverIndexRef.current;
+    const to = dragOverIndexRef.current;
     if (from !== null && to !== null && from !== to) {
       const newOrders = [...orders];
       const [removed] = newOrders.splice(from, 1);
@@ -278,20 +306,23 @@ export default function OSCardGrid({ orders, onReorder, onPriorityChange, zoom =
     }
   }, []);
 
-  const handleDragOver  = useCallback((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, []);
-  const handleDrop      = useCallback((index) => { dragOverIndexRef.current = index; }, []);
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
 
-  const colsClass = zoomGridCols[String(zoom)] || zoomGridCols['0'];
+  const handleDrop = useCallback((index) => {
+    dragOverIndexRef.current = index;
+  }, []);
 
   return (
-    <div className={`grid ${colsClass} gap-2`}>
+    <div className={`grid gap-3 ${getGridClass(zoomLevel)}`}>
       {orders.map((order, index) => (
-        <OSCardItem
+        <OSCardGridItem
           key={order.id}
           order={order}
           index={index}
           total={orders.length}
-          zoom={zoom}
           onPriorityChange={onPriorityChange}
           onMoveUp={handleMoveUp}
           onMoveDown={handleMoveDown}
@@ -302,6 +333,7 @@ export default function OSCardGrid({ orders, onReorder, onPriorityChange, zoom =
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
+          compact={compact}
         />
       ))}
     </div>
