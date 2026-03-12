@@ -374,10 +374,13 @@ class SHOficinaSync {
 
       const statusChanged = newStatus !== existing.currentStatus;
 
-      // Se nada mudou, sai
-      if (!statusChanged && !clientChanged && !equipChanged) return;
+      const createdAtChanged = shoCreatedAt && existing.createdAt !== shoCreatedAt;
 
-      const completedAt = newStatus === 'COMPLETED' ? now : null;
+      // Só escreve se algo mudou de verdade — evita writes e socket emits desnecessários
+      if (!statusChanged && !clientChanged && !equipChanged && !createdAtChanged) return;
+
+      // Preserva completedAt existente se já estava concluída
+      const completedAt = newStatus === 'COMPLETED' ? (existing.completedAt || now) : null;
       // Sempre atualiza createdAt com o valor real do SHOficina (campo ENTRADA)
       this.db.prepare(
         `UPDATE orders SET currentStatus = ?, completedAt = ?, clientName = ?, equipmentName = ?, createdAt = ?, updatedAt = ? WHERE id = ?`

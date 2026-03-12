@@ -109,6 +109,11 @@ function initDatabase() {
       completedAt               TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS comments (
       id        INTEGER PRIMARY KEY AUTOINCREMENT,
       osId      INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -116,11 +121,14 @@ function initDatabase() {
       comment   TEXT    NOT NULL,
       createdAt TEXT    NOT NULL DEFAULT (datetime('now'))
     );
+  `);
 
-    CREATE TABLE IF NOT EXISTS settings (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL DEFAULT ''
-    );
+  // Índices para acelerar queries mais comuns
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_orders_status    ON orders(currentStatus);
+    CREATE INDEX IF NOT EXISTS idx_orders_osNumber  ON orders(osNumber);
+    CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt);
+    CREATE INDEX IF NOT EXISTS idx_comments_osId    ON comments(osId);
   `);
 
   const userCount = db.prepare('SELECT COUNT(*) as n FROM users').get().n;
@@ -140,28 +148,9 @@ function initDatabase() {
 
 // ============== HELPERS DB ==============
 function getOrderWithRelations(db, id) {
-  const order = db.prepare(`
-    SELECT o.*,
-           u1.fullName  AS assignedFullName,
-           u1.id        AS assignedId,
-           u1.username  AS assignedUsername,
-           u2.fullName  AS createdFullName,
-           u2.id        AS createdId
-    FROM orders o
-    LEFT JOIN users u1 ON u1.id = o.assignedToUserId
-    LEFT JOIN users u2 ON u2.id = o.createdById
-    WHERE o.id = ?
-  `).get(id);
-
+  const order = stmts.getOrderById.get(id);
   if (!order) return null;
-
-  const comments = db.prepare(`
-    SELECT c.*, u.fullName AS userFullName, u.username AS userUsername
-    FROM comments c
-    LEFT JOIN users u ON u.id = c.userId
-    WHERE c.osId = ?
-    ORDER BY c.createdAt ASC
-  `).all(id);
+  const comments = stmts.getCommentsByOs.all(id);
 
   return formatOrder(order, comments);
 }
@@ -248,7 +237,9 @@ function getAllOrders(db, filters = {}) {
 
   const ids = rows.map(r => r.id);
   let commentsMap = {};
-  if (ids.length > 0) {
+  // Comentários só são buscados quando explicitamente necessários (detalhe da OS)
+  // No dashboard/lista não precisamos — economiza queries
+  if (filters.includeComments && ids.length > 0) {
     const placeholders = ids.map(() => '?').join(',');
     const allComments = db.prepare(`
       SELECT c.*, u.fullName AS userFullName, u.username AS userUsername
@@ -257,7 +248,6 @@ function getAllOrders(db, filters = {}) {
       WHERE c.osId IN (${placeholders})
       ORDER BY c.createdAt ASC
     `).all(...ids);
-
     allComments.forEach(c => {
       if (!commentsMap[c.osId]) commentsMap[c.osId] = [];
       commentsMap[c.osId].push(c);
@@ -294,6 +284,28 @@ const io = new Server(server, {
     credentials: true,
   },
 });
+
+// ─── Cache de prepared statements (evita recompilar a cada request) ────────
+const stmts = {
+  getUserById:   db.prepare('SELECT * FROM users WHERE id = ?'),
+  getUserByName: db.prepare('SELECT * FROM users WHERE username = ?'),
+  getOrderById:  db.prepare(`
+    SELECT o.*,
+           u1.fullName AS assignedFullName, u1.id AS assignedId, u1.username AS assignedUsername,
+           u2.fullName AS createdFullName,  u2.id AS createdId
+    FROM orders o
+    LEFT JOIN users u1 ON u1.id = o.assignedToUserId
+    LEFT JOIN users u2 ON u2.id = o.createdById
+    WHERE o.id = ?`),
+  getCommentsByOs: db.prepare(`
+    SELECT c.*, u.fullName AS userFullName, u.username AS userUsername
+    FROM comments c LEFT JOIN users u ON u.id = c.userId
+    WHERE c.osId = ? ORDER BY c.createdAt ASC`),
+};
+
+// Cache de autenticação em memória (evita SELECT no banco em todo request)
+const authCache = new Map(); // token → { user, expiresAt }
+const AUTH_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 // ─── SHOficina sync (criado depois de db e io) ───────────────────
 const shoSync = new SHOficinaSync(db, io);
@@ -342,11 +354,20 @@ function authMiddleware(req, res, next) {
   const match = token.match(/^token-(\d+)-\d+$/);
   if (!match) return res.status(401).json({ error: 'Token inválido' });
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(parseInt(match[1]));
+  const now = Date.now();
+  const cached = authCache.get(token);
+  if (cached && cached.expiresAt > now) {
+    req.userId = cached.user.id;
+    req.user   = cached.user;
+    return next();
+  }
+
+  const user = stmts.getUserById.get(parseInt(match[1]));
   if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
 
+  authCache.set(token, { user, expiresAt: now + AUTH_CACHE_TTL });
   req.userId = user.id;
-  req.user = user;
+  req.user   = user;
   next();
 }
 
@@ -597,6 +618,92 @@ app.post('/api/os/:id/comments', authMiddleware, (req, res) => {
   res.json({ comment: formatted });
 });
 
+// ============== ROTAS SETTINGS ==============
+
+app.get('/api/settings/shoficina', authMiddleware, (req, res) => {
+  const pathRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_path'").get();
+  const passRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get();
+  res.json({
+    path: pathRow?.value || process.env.SHOFICINA_PATH || '',
+    pass: passRow?.value || '',
+  });
+});
+
+app.put('/api/settings/shoficina', authMiddleware, (req, res) => {
+  try {
+    const { path: mdbPath, pass: mdbPass } = req.body;
+
+    if (mdbPath !== undefined) {
+      db.prepare("INSERT INTO settings (key, value) VALUES ('shoficina_path', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(mdbPath);
+      process.env.SHOFICINA_PATH = mdbPath;
+    }
+
+    if (mdbPass !== undefined) {
+      db.prepare("INSERT INTO settings (key, value) VALUES ('shoficina_pass', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(mdbPass);
+      process.env.SHOFICINA_PASS = mdbPass;
+    }
+
+    // Reinicia o sync com os novos valores
+    shoSync.stop();
+    setTimeout(() => shoSync.start(), 500);
+
+    console.log('⚙️  Settings SHOficina atualizados:', mdbPath);
+    res.json({ success: true, message: 'Configurações salvas. Sincronização reiniciada.' });
+  } catch (err) {
+    console.error('❌ Erro ao salvar settings:', err.message);
+    res.status(500).json({ error: 'Erro ao salvar configurações: ' + err.message });
+  }
+});
+
+app.post('/api/settings/shoficina/test', authMiddleware, (req, res) => {
+  const { path: mdbPath, pass: mdbPass } = req.body;
+
+  const testPath = mdbPath || process.env.SHOFICINA_PATH || '';
+  const testPass = mdbPass !== undefined ? mdbPass : (process.env.SHOFICINA_PASS || '');
+
+  if (!testPath) {
+    return res.status(400).json({ success: false, error: 'Caminho do arquivo MDB não informado.' });
+  }
+
+  const fs = require('fs');
+  if (!fs.existsSync(testPath)) {
+    return res.status(400).json({ success: false, error: `Arquivo não encontrado: ${testPath}` });
+  }
+
+  // Tenta abrir conexão OleDB via PowerShell para validar
+  const { execFileSync } = require('child_process');
+  const os = require('os');
+  const path = require('path');
+
+  const script = `
+$ErrorActionPreference = 'Stop'
+$conn = New-Object System.Data.OleDb.OleDbConnection
+$conn.ConnectionString = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source='${testPath}';Jet OLEDB:Database Password='${testPass}';"
+try { $conn.Open() } catch {
+  $conn.ConnectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source='${testPath}';Jet OLEDB:Database Password='${testPass}';"
+  $conn.Open()
+}
+$conn.Close()
+Write-Output "OK"
+`.trim();
+
+  const tmpFile = path.join(os.tmpdir(), `sho_test_${Date.now()}.ps1`);
+  try {
+    fs.writeFileSync(tmpFile, '﻿' + script, { encoding: 'utf8' });
+    execFileSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpFile,
+    ], { timeout: 10000, encoding: 'utf8' });
+    try { fs.unlinkSync(tmpFile); } catch {}
+    res.json({ success: true, message: 'Conexão com o banco MDB realizada com sucesso!' });
+  } catch (err) {
+    try { fs.unlinkSync(tmpFile); } catch {}
+    const msg = err.message?.split('\n')[0] || 'Erro desconhecido';
+    res.status(400).json({ success: false, error: `Falha na conexão: ${msg}` });
+  }
+});
+
 // ============== ROTAS AUXILIARES ==============
 
 app.get('/api/network/info', (req, res) => {
@@ -609,51 +716,6 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({ message: 'OS Manager Backend', version: '3.0.0', serverIp: LOCAL_IP });
-});
-
-// ============== ROTAS SETTINGS / SHOFICINA ==============
-
-// GET /api/settings/shoficina — retorna configuração atual
-app.get('/api/settings/shoficina', authMiddleware, (req, res) => {
-  const pathRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_path'").get();
-  const passRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get();
-  res.json({
-    path: pathRow?.value || process.env.SHOFICINA_PATH || 'C:\\SHARMAQ\\SHOficina\\dados.mdb',
-    hasPassword: !!(passRow?.value || process.env.SHOFICINA_PASS),
-  });
-});
-
-// PUT /api/settings/shoficina — salva e recarrega sync
-app.put('/api/settings/shoficina', authMiddleware, (req, res) => {
-  const { path: mdbPath, password: mdbPass } = req.body;
-  if (!mdbPath) return res.status(400).json({ error: 'Caminho do arquivo é obrigatório' });
-
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('shoficina_path', ?)").run(mdbPath);
-  if (mdbPass !== undefined && mdbPass !== null) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('shoficina_pass', ?)").run(mdbPass);
-  }
-
-  const savedPass = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get()?.value
-    || process.env.SHOFICINA_PASS || '';
-  const finalPass = (mdbPass !== undefined && mdbPass !== null) ? mdbPass : savedPass;
-
-  shoSync.reload(mdbPath, finalPass);
-  console.log(`⚙️  [Settings] SHOficina reconfigurado: ${mdbPath}`);
-  res.json({ ok: true, message: 'Configuração salva. Sincronização reiniciada.' });
-});
-
-// POST /api/settings/shoficina/test — testa conexão sem salvar
-app.post('/api/settings/shoficina/test', authMiddleware, (req, res) => {
-  const { path: mdbPath, password: mdbPass } = req.body;
-  if (!mdbPath) return res.status(400).json({ error: 'Caminho obrigatório' });
-
-  const { testConnection } = require('./sync/shoficina');
-  const result = testConnection(mdbPath, mdbPass || '');
-  if (result.ok) {
-    res.json({ ok: true, message: `Conexão OK! Tabelas: ${result.tables?.join(', ') || 'nenhuma'}` });
-  } else {
-    res.status(400).json({ ok: false, error: result.error || 'Falha na conexão' });
-  }
 });
 
 // SPA catch-all
@@ -690,6 +752,14 @@ async function startServer() {
 ╚════════════════════════════════════════════════╝
     `);
     console.log(`📱 Conectar outros dispositivos: http://${ip}:${p}\n`);
+
+    // Carrega settings salvas do banco antes de iniciar o sync
+    try {
+      const savedPath = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_path'").get();
+      const savedPass = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get();
+      if (savedPath?.value) { process.env.SHOFICINA_PATH = savedPath.value; console.log('⚙️  MDB path carregado das settings:', savedPath.value); }
+      if (savedPass?.value) { process.env.SHOFICINA_PASS = savedPass.value; }
+    } catch {}
 
     // Inicia sync SHOficina após o servidor estar pronto
     shoSync.start();
