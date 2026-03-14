@@ -419,6 +419,29 @@ class SHOficinaSync {
       comments: [],
     };
   }
+  // Testa conexão com o MDB usando a infraestrutura existente
+  test(mdbPath, mdbPass) {
+    const fs = require('fs');
+    if (!mdbPath) return { success: false, error: 'Caminho do arquivo MDB não informado.' };
+    if (!fs.existsSync(mdbPath)) return { success: false, error: `Arquivo não encontrado: ${mdbPath}` };
+
+    // Sobrescreve temporariamente as variáveis de ambiente para o teste
+    const prevPath = process.env.SHOFICINA_PATH;
+    const prevPass = process.env.SHOFICINA_PASS;
+    process.env.SHOFICINA_PATH = mdbPath;
+    if (mdbPass !== undefined) process.env.SHOFICINA_PASS = mdbPass;
+
+    try {
+      const rows = queryMDB('SELECT TOP 1 * FROM [CLIENTES]');
+      if (rows === null) return { success: false, error: 'Falha ao conectar. Verifique o caminho e a senha.' };
+      return { success: true, message: 'Conexão realizada com sucesso!' };
+    } catch (err) {
+      return { success: false, error: err.message?.split('\n')[0] || 'Erro desconhecido' };
+    } finally {
+      process.env.SHOFICINA_PATH = prevPath;
+      if (mdbPass !== undefined) process.env.SHOFICINA_PASS = prevPass;
+    }
+  }
 }
 
 module.exports = { SHOficinaSync };

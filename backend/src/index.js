@@ -659,48 +659,15 @@ app.put('/api/settings/shoficina', authMiddleware, (req, res) => {
 
 app.post('/api/settings/shoficina/test', authMiddleware, (req, res) => {
   const { path: mdbPath, pass: mdbPass } = req.body;
-
   const testPath = mdbPath || process.env.SHOFICINA_PATH || '';
-  const testPass = mdbPass !== undefined ? mdbPass : (process.env.SHOFICINA_PASS || '');
+  const testPass = mdbPass !== undefined ? mdbPass : undefined;
 
-  if (!testPath) {
-    return res.status(400).json({ success: false, error: 'Caminho do arquivo MDB não informado.' });
-  }
-
-  const fs = require('fs');
-  if (!fs.existsSync(testPath)) {
-    return res.status(400).json({ success: false, error: `Arquivo não encontrado: ${testPath}` });
-  }
-
-  // Tenta abrir conexão OleDB via PowerShell para validar
-  const { execFileSync } = require('child_process');
-  const os = require('os');
-  const path = require('path');
-
-  const script = `
-$ErrorActionPreference = 'Stop'
-$conn = New-Object System.Data.OleDb.OleDbConnection
-$conn.ConnectionString = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source='${testPath}';Jet OLEDB:Database Password='${testPass}';"
-try { $conn.Open() } catch {
-  $conn.ConnectionString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source='${testPath}';Jet OLEDB:Database Password='${testPass}';"
-  $conn.Open()
-}
-$conn.Close()
-Write-Output "OK"
-`.trim();
-
-  const tmpFile = path.join(os.tmpdir(), `sho_test_${Date.now()}.ps1`);
-  try {
-    fs.writeFileSync(tmpFile, '﻿' + script, { encoding: 'utf8' });
-    execFileSync('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpFile,
-    ], { timeout: 10000, encoding: 'utf8' });
-    try { fs.unlinkSync(tmpFile); } catch {}
-    res.json({ success: true, message: 'Conexão com o banco MDB realizada com sucesso!' });
-  } catch (err) {
-    try { fs.unlinkSync(tmpFile); } catch {}
-    const msg = err.message?.split('\n')[0] || 'Erro desconhecido';
-    res.status(400).json({ success: false, error: `Falha na conexão: ${msg}` });
+  // Reutiliza a infraestrutura do SHOficinaSync (mesmo código que o sync real usa)
+  const result = shoSync.test(testPath, testPass);
+  if (result.success) {
+    res.json(result);
+  } else {
+    res.status(400).json(result);
   }
 });
 
