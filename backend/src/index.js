@@ -633,11 +633,13 @@ app.post('/api/os/:id/comments', authMiddleware, (req, res) => {
 // ============== ROTAS SETTINGS ==============
 
 app.get('/api/settings/shoficina', authMiddleware, (req, res) => {
-  const pathRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_path'").get();
-  const passRow = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get();
+  const pathRow   = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_path'").get();
+  const passRow   = db.prepare("SELECT value FROM settings WHERE key = 'shoficina_pass'").get();
+  const cutoffRow = db.prepare("SELECT value FROM settings WHERE key = 'import_cutoff'").get();
   res.json({
-    path: pathRow?.value || process.env.SHOFICINA_PATH || '',
-    pass: passRow?.value || '',
+    path:   pathRow?.value   || process.env.SHOFICINA_PATH || '',
+    pass:   passRow?.value   || '',
+    cutoff: cutoffRow?.value || '2026-01-01',
   });
 });
 

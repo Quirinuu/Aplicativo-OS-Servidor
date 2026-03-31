@@ -4,8 +4,16 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 
-const MDB_PATH      = process.env.SHOFICINA_PATH     || 'C:\\SHARMAQ\\SHOficina\\dados.mdb';
-const MDB_PASS      = process.env.SHOFICINA_PASS     || '!(&&!!)&';
+// ⚠️  NÃO use constantes aqui — o usuário pode alterar o caminho/senha
+//     nas configurações enquanto o app roda. Lemos de process.env sempre
+//     no momento da execução, não na carga do módulo.
+function getMdbPath() {
+  return process.env.SHOFICINA_PATH || 'C:\\SHARMAQ\\SHOficina\\dados.mdb';
+}
+function getMdbPass() {
+  return process.env.SHOFICINA_PASS || '!(&&!!)&';
+}
+
 const POLL_INTERVAL = parseInt(process.env.SHOFICINA_INTERVAL || '30000'); // 30s padrão
 
 const STATUS_ORDER = { RECEIVED: 0, WAITING: 1, IN_PROGRESS: 2, COMPLETED: 3 };
@@ -21,7 +29,7 @@ function deburr(str) {
     .trim();
 }
 
-// Mapa por código numérico (prefixo do status, ex: "6-Autorizado..." → código "6")
+// Mapa por código numérico (prefixo do status, ex: "6-Autorizado...» → código "6")
 const STATUS_CODE_MAP = {
   '1':  'RECEIVED',     // Aguardando avaliação
   '3':  'WAITING',      // Aguardando autorização
@@ -77,7 +85,7 @@ function mapStatus(situacao, pronto) {
   const raw = String(situacao).trim();
   const norm = deburr(raw);
 
-  // Passo 1: extrai código numérico do prefixo ("6-Autorizado..." → "6")
+  // Passo 1: extrai código numérico do prefixo ("6-Autorizado...» → "6")
   const codeMatch = norm.match(/^(\d+)\s*[-:]\s*/);
   if (codeMatch && STATUS_CODE_MAP[codeMatch[1]]) {
     return STATUS_CODE_MAP[codeMatch[1]];
@@ -157,15 +165,19 @@ function runPS1(scriptContent) {
   throw new Error(errMsg);
 }
 
+// ⚠️  buildConnScript lê getMdbPath()/getMdbPass() em cada chamada,
+//     garantindo que mudanças nas configurações sejam refletidas imediatamente.
 function buildConnScript(body) {
+  const mdbPath = getMdbPath();
+  const mdbPass = getMdbPass();
   return `
 $ErrorActionPreference = 'Stop'
 $pass = @'
-${MDB_PASS}
+${mdbPass}
 '@
 $pass = $pass.Trim()
 $src = @'
-${MDB_PATH}
+${mdbPath}
 '@
 $src = $src.Trim()
 $conn = New-Object System.Data.OleDb.OleDbConnection
@@ -215,10 +227,8 @@ if ($rows.Count -eq 0) { Write-Output '[]' } else { $rows | ConvertTo-Json -Dept
 
 function queryClientName(codCliente) {
   if (!codCliente || codCliente === '0' || codCliente === 'null') return null;
-  // Tenta colunas comuns de nome em tabelas de clientes
   const cod = parseInt(codCliente);
   const isNum = !isNaN(cod);
-  // CLIENTES.CODIGO é numérico no Access — sem aspas. Se não for número, tenta com aspas.
   const attempts = isNum ? [
     `SELECT NOME FROM [CLIENTES] WHERE CODIGO = ${cod}`,
     `SELECT RAZAO FROM [CLIENTES] WHERE CODIGO = ${cod}`,
@@ -263,7 +273,6 @@ function discoverColumns() {
     console.log('📋 [SHOficina] Tabelas encontradas:', allTables.join(', '));
   }
 
-  // Tabelas que definitivamente não são OS (financeiro, config, aux)
   const blacklist = new Set([
     'BANCOS', 'FORNECEDORES', 'FUNCIONARIOS', 'USUARIOS', 'ADVOGADOS',
     'CHEQUES', 'BOLETOS', 'CARTOES', 'CONTAS', 'CONTAS_CONTAS', 'CONTAS_DEPOSITOS',
@@ -275,53 +284,37 @@ function discoverColumns() {
     'CONVENIO_BOLETO', 'CONVENIO_CARTAO',
   ]);
 
-  // Nomes mais comuns de tabela de OS em sistemas brasileiros — do mais ao menos específico
   const priority = [
-    // SHOficina clássico
     'ORDEMS', 'OS', 'ORDENS', 'ORDEM',
-    // Variações comuns
     'OrdemServico', 'OrdensServico', 'ORDEM_SERVICO', 'ORDENS_SERVICO',
     'ordem_servico', 'Ordens_Servico', 'tblOS', 'tblOrdens', 'OSTable',
-    // Este MDB específico parece usar CHAMADO como OS
     'CHAMADO', 'CHAMADOS', 'SOLICITACAO', 'SOLICITACOES',
     'MANUTENCAO', 'MANUTENCOES', 'SERVICO', 'ATENDIMENTO',
   ];
 
-  // Heurística ampliada para identificar tabela de OS
   function looksLikeOSTable(cols) {
     const names = cols.map(c => c.toLowerCase());
-    // Precisa ter pelo menos uma coluna de identificação de OS/cliente
     const hasClientRef  = names.some(n => n.includes('cliente') || n.includes('cod_cli') || n === 'cliente');
     const hasStatusRef  = names.some(n => n.includes('situac') || n.includes('status') || n.includes('pronto') || n.includes('realizado') || n.includes('conclu'));
     const hasDateRef    = names.some(n => n.includes('entrada') || n.includes('data') || n.includes('dia') || n.includes('cadastro'));
     const hasEquipRef   = names.some(n => n.includes('aparelho') || n.includes('equipamento') || n.includes('equip') || n.includes('descr') || n.includes('serv'));
     const hasIdRef      = names.some(n => n === 'codigo' || n === 'os' || n.includes('numero') || n.includes('os_num'));
-
-    // Score: quanto mais critérios bater, mais provável ser OS
-    const score = [hasClientRef, hasStatusRef, hasDateRef, hasEquipRef, hasIdRef]
-      .filter(Boolean).length;
-
-    return score >= 3; // precisa de pelo menos 3 de 5 critérios
+    const score = [hasClientRef, hasStatusRef, hasDateRef, hasEquipRef, hasIdRef].filter(Boolean).length;
+    return score >= 3;
   }
 
   const skipAlreadyTried = new Set();
 
-  // Tenta primeiro as tabelas da lista priority que existem no banco
   const priorityExisting = priority.filter(t =>
     allTables.some(at => at.toUpperCase() === t.toUpperCase())
   );
 
-  // Depois as demais não blacklistadas
   const rest = allTables.filter(t =>
     !blacklist.has(t) && !blacklist.has(t.toUpperCase()) &&
     !priority.some(p => p.toUpperCase() === t.toUpperCase())
   );
 
-  const candidates = [
-    ...priorityExisting,
-    ...rest,
-  ];
-
+  const candidates = [...priorityExisting, ...rest];
 
   for (const table of candidates) {
     if (skipAlreadyTried.has(table)) continue;
@@ -346,19 +339,15 @@ function discoverColumns() {
 }
 
 function inferColumns(columns) {
-  // find: procura correspondência exata primeiro, depois parcial
   const find = (...terms) =>
     columns.find(c => terms.some(t => c.toLowerCase() === t.toLowerCase())) ||
     columns.find(c => terms.some(t => c.toLowerCase().includes(t.toLowerCase()))) ||
     null;
 
   const map = {
-    // ID / número da OS
     id:           find('CODIGO', 'OS_NUMERO', 'NUMERO', 'ID', 'COD_OS'),
     osNumber:     find('CODIGO', 'OS_NUMERO', 'NUMERO', 'ID', 'COD_OS'),
-    // Cliente
     client:       find('COD_CLIENTE', 'CLIENTE', 'ID_CLIENTE'),
-    // Equipamento — CHAMADO usa DESCRICAO/TIPO como descrição do serviço
     equipment:    find('APARELHO', 'EQUIPAMENTO', 'EQUIP', 'DESCRICAO', 'TIPO', 'SERVICO'),
     brand:        find('MARCA'),
     model:        find('MODELO'),
@@ -367,17 +356,23 @@ function inferColumns(columns) {
     accessories:  find('ACESSORIO', 'ACESS'),
     defect:       find('DEFEITO', 'PROBLEMA', 'DESCRICAO_DEFEITO'),
     observations: find('OBS_SERVICO', 'OBSERVACAO', 'OBS', 'OBSERV'),
-    // Status — CHAMADO usa REALIZADO como concluído
     status:       find('SITUACAO', 'STATUS', 'ESTADO'),
     pronto:       find('PRONTO', 'REALIZADO', 'CONCLUIDO', 'FINALIZADO'),
     priority:     find('PRIORIDADE', 'PRIOR', 'URGENCIA'),
-    // Datas
     createdAt:    find('ENTRADA', 'DIA_CHAMADO', 'DATA_CADASTRO', 'DATA', 'DIA', 'CADASTRO'),
     completedAt:  find('SAIDA', 'DATA_CONCLUSAO', 'DIA_CONCLUSAO'),
   };
 
   console.log('🗺️  [SHOficina] Mapeamento de colunas:', JSON.stringify(map));
   return map;
+}
+
+// Converte a data de corte JS para o formato de literal de data do Access: #MM/DD/YYYY#
+function toAccessDateLiteral(date) {
+  const mm   = String(date.getMonth() + 1).padStart(2, '0');
+  const dd   = String(date.getDate()).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  return `#${mm}/${dd}/${yyyy}#`;
 }
 
 class SHOficinaSync {
@@ -388,16 +383,16 @@ class SHOficinaSync {
     this.tableInfo = null;
     this.colMap    = null;
     this.isWindows = process.platform === 'win32';
-    // Carrega data de corte do banco (salva em settings)
     this._loadCutoff();
   }
 
   _loadCutoff() {
     try {
       const row = this.db.prepare("SELECT value FROM settings WHERE key = 'import_cutoff'").get();
-      this.importCutoff = row?.value ? new Date(row.value) : new Date('2026-03-18T00:00:00');
+      // Padrão: 01/01/2026
+      this.importCutoff = row?.value ? new Date(row.value) : new Date('2026-01-01T00:00:00');
     } catch {
-      this.importCutoff = new Date('2026-03-18T00:00:00');
+      this.importCutoff = new Date('2026-01-01T00:00:00');
     }
     console.log(`📅 [SHOficina] Data de corte: ${this.importCutoff.toLocaleDateString('pt-BR')}`);
   }
@@ -417,7 +412,7 @@ class SHOficinaSync {
       return;
     }
     console.log('🔄 [SHOficina] Iniciando sincronização...');
-    console.log(`📁 [SHOficina] Caminho: ${MDB_PATH}`);
+    console.log(`📁 [SHOficina] Caminho: ${getMdbPath()}`);
     console.log(`⏱️  [SHOficina] Intervalo: ${POLL_INTERVAL / 1000}s`);
     this._setup();
   }
@@ -450,8 +445,7 @@ class SHOficinaSync {
       console.error('❌ [SHOficina] Erro na limpeza:', e.message);
     }
 
-    // Usa setTimeout recursivo em vez de setInterval
-    // Garante que o próximo poll só começa APÓS o anterior terminar
+    // Usa setTimeout recursivo — garante que o próximo poll só começa APÓS o anterior terminar
     const schedulePoll = () => {
       this.timer = setTimeout(async () => {
         await this._poll();
@@ -466,25 +460,47 @@ class SHOficinaSync {
     const { table } = this.tableInfo;
     const col = this.colMap;
 
-    // Sem JOIN — COD_CLIENTE(texto) vs CLIENTES.CODIGO(número) causa erro de tipo no OleDB
-    // O nome do cliente é resolvido em _syncRow via queryClientName()
-    // Sem ORDER BY — CODIGO é texto no Access, ordenar causa erro de tipo
-    const sql = `SELECT TOP 500 * FROM [${table}] ORDER BY CODIGO DESC`; // Suficiente com cutoff de data
+    // ─── Monta SQL com filtro de data direto no Access ────────────────────────
+    // O Access aceita literais de data no formato #MM/DD/YYYY#.
+    // Filtrar no SQL é MUITO mais eficiente do que trazer tudo e filtrar em JS,
+    // especialmente com 13 mil registros.
+    //
+    // Estratégia:
+    //   1. Se a coluna de data foi descoberta → filtra no Access (ideal)
+    //   2. Se não → traz os últimos 5.000 sem ORDER BY (CODIGO é texto,
+    //      ordenar lexicograficamente quebraria a seleção)
+    let sql;
+    if (col.createdAt) {
+      const accessDate = toAccessDateLiteral(this.importCutoff);
+      sql = `SELECT * FROM [${table}] WHERE [${col.createdAt}] >= ${accessDate}`;
+      console.log(`🔍 [POLL] SQL com filtro de data: ${col.createdAt} >= ${accessDate}`);
+    } else {
+      // Fallback: sem coluna de data conhecida — puxa os últimos 5000 sem ORDER BY
+      // (ORDER BY CODIGO DESC quebraria porque CODIGO é TEXT, não INTEGER)
+      sql = `SELECT TOP 5000 * FROM [${table}]`;
+      console.log(`🔍 [POLL] SQL sem filtro de data (coluna não descoberta), TOP 5000`);
+    }
 
-    const rows = queryMDB(sql);
+    let rows = queryMDB(sql);
+
+    // Se o filtro de data falhou (coluna é texto, não Date/Time no Access),
+    // faz um fallback sem o filtro e aplica o corte em JS
+    if (rows === null && col.createdAt) {
+      console.warn('⚠️  [POLL] Filtro de data no Access falhou — tentando sem filtro...');
+      sql = `SELECT TOP 5000 * FROM [${table}]`;
+      rows = queryMDB(sql);
+    }
+
     if (rows === null) {
       console.error(`❌ [POLL] Falha ao ler tabela "${table}" (ver erro acima)`);
       return;
     }
 
-
-
-
     console.log(`📦 [POLL] ${rows.length} registros lidos`);
 
-    // Cache de clientes por 5 minutos — evita ~16 PowerShells a cada poll
+    // Cache de clientes por 10 minutos — evita PowerShell a cada poll
     const cacheAge = Date.now() - (this._clientCacheTime || 0);
-    if (cacheAge > 10 * 60 * 1000) { // cache de 10 min
+    if (cacheAge > 10 * 60 * 1000) {
       this._clientCache = this._fetchClientNames(rows, col);
       this._clientCacheTime = Date.now();
       console.log(`👥 [POLL] Cache clientes: ${Object.keys(this._clientCache).length}`);
@@ -498,7 +514,8 @@ class SHOficinaSync {
     }
     if (imported > 0) console.log(`✅ [POLL] ${imported} OS importadas`);
     if (updated > 0)  console.log(`🔄 [POLL] ${updated} OS atualizadas`);
-    // Verifica OS fechadas só a cada 5 polls — operação mais pesada
+
+    // Verifica OS fechadas só a cada 5 polls
     this._pollCount = (this._pollCount || 0) + 1;
     if (this._pollCount % 5 === 0) this._checkClosedInDB(rows);
   }
@@ -514,7 +531,6 @@ class SHOficinaSync {
     if (!osNumber) return;
 
     const codCliente = col.client ? String(row[col.client] || '').trim() : null;
-    // Usa o mapa pré-carregado em batch (sem PowerShell adicional por OS)
     const clientName = (codCliente && clientMap[codCliente])
       ? clientMap[codCliente]
       : (codCliente || 'Cliente SHOficina');
@@ -537,7 +553,6 @@ class SHOficinaSync {
     const priority   = mapPriority(col.priority ? row[col.priority] : null);
 
     // Usa a data ENTRADA do SHOficina como createdAt
-    // Armazena como string ISO sem fuso (naive) para preservar o horário exato do SHOficina
     let shoCreatedAt = null;
     const rawEntrada = col.createdAt ? String(row[col.createdAt] || '').trim() : '';
     if (rawEntrada && rawEntrada !== 'null') {
@@ -545,10 +560,8 @@ class SHOficinaSync {
       const brMatch = rawEntrada.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
       if (brMatch) {
         const [, d, m, y, hh = '00', mm = '00', ss = '00'] = brMatch;
-        // Sem "Z" no final — preserva horário local sem converter para UTC
         shoCreatedAt = `${y}-${m}-${d}T${hh}:${mm}:${ss}`;
       } else if (rawEntrada) {
-        // Fallback para outros formatos
         const parsed = new Date(rawEntrada);
         if (!isNaN(parsed.getTime())) shoCreatedAt = rawEntrada;
       }
@@ -556,7 +569,8 @@ class SHOficinaSync {
 
     if (!osNumber || !extId) return;
 
-    // Só importa OS criadas a partir do corte — se não tiver data ou for anterior, ignora
+    // Aplica filtro de data em JS como segunda barreira
+    // (necessário quando o filtro SQL não pôde ser aplicado)
     if (!shoCreatedAt) return;
     const osDate = new Date(shoCreatedAt);
     if (isNaN(osDate.getTime()) || osDate < this.importCutoff) return;
@@ -592,13 +606,11 @@ class SHOficinaSync {
 
     } else {
 
-      // Verifica se cliente ou equipamento precisam ser corrigidos (ex: vinham como "0")
-      const needsClientFix    = !existing.clientName    || existing.clientName    === '0' || existing.clientName    === 'Cliente SHOficina';
-      const needsEquipFix     = !existing.equipmentName || existing.equipmentName === '0' || existing.equipmentName === 'Equipamento';
-      const clientChanged     = needsClientFix    && clientName    && clientName    !== '0';
-      const equipChanged      = needsEquipFix     && equipment     && equipment     !== '0' && equipment !== 'Equipamento';
+      const needsClientFix = !existing.clientName    || existing.clientName    === '0' || existing.clientName    === 'Cliente SHOficina';
+      const needsEquipFix  = !existing.equipmentName || existing.equipmentName === '0' || existing.equipmentName === 'Equipamento';
+      const clientChanged  = needsClientFix && clientName && clientName !== '0';
+      const equipChanged   = needsEquipFix  && equipment  && equipment  !== '0' && equipment !== 'Equipamento';
 
-      // Calcula novo status (respeitando regras de não regressão)
       let newStatus = existing.currentStatus;
       if (existing.currentStatus !== 'COMPLETED') {
         const currentLevel = STATUS_ORDER[existing.currentStatus] ?? 0;
@@ -606,16 +618,12 @@ class SHOficinaSync {
         if (newLevel >= currentLevel) newStatus = status;
       }
 
-      const statusChanged = newStatus !== existing.currentStatus;
-
+      const statusChanged    = newStatus !== existing.currentStatus;
       const createdAtChanged = shoCreatedAt && existing.createdAt !== shoCreatedAt;
 
-      // Só escreve se algo mudou de verdade — evita writes e socket emits desnecessários
       if (!statusChanged && !clientChanged && !equipChanged && !createdAtChanged) return;
 
-      // Preserva completedAt existente se já estava concluída
       const completedAt = newStatus === 'COMPLETED' ? (existing.completedAt || now) : null;
-      // Sempre atualiza createdAt com o valor real do SHOficina (campo ENTRADA)
       this.db.prepare(
         `UPDATE orders SET currentStatus = ?, completedAt = ?, clientName = ?, equipmentName = ?, createdAt = ?, updatedAt = ? WHERE id = ?`
       ).run(newStatus, completedAt, clientName || existing.clientName, equipment || existing.equipmentName, shoCreatedAt || existing.createdAt, now, existing.id);
@@ -632,8 +640,6 @@ class SHOficinaSync {
     }
   }
 
-  // Marca como COMPLETED no nosso banco as OS que sumiram do resultado do MDB
-  // (foram finalizadas no SHOficina e o filtro WHERE já não as retorna mais)
   _fetchClientNames(rows, col) {
     if (!col.client) return {};
     const ids = [...new Set(
@@ -660,22 +666,18 @@ class SHOficinaSync {
     const col = this.colMap;
     if (!col.id) return;
 
-    // IDs que vieram do MDB neste poll
     const mdbIds = new Set(mdbRows.map(r => String(r[col.id] || '').trim()).filter(Boolean));
 
-    // OS abertas no nosso banco (não COMPLETED)
     const openInDB = this.db.prepare(
       `SELECT id, osNumber, optionalDescription FROM orders WHERE currentStatus != 'COMPLETED'`
     ).all();
 
     const now = new Date().toISOString();
     for (const order of openInDB) {
-      // Extrai o ID do SHOficina do campo optionalDescription ([shoficina:X])
       const match = order.optionalDescription?.match(/\[shoficina:(\d+)\]/);
       const shoId = match ? match[1] : order.osNumber;
 
       if (shoId && !mdbIds.has(shoId)) {
-        // Não veio no resultado = foi finalizada no SHOficina
         this.db.prepare(
           `UPDATE orders SET currentStatus = 'COMPLETED', completedAt = ?, updatedAt = ? WHERE id = ?`
         ).run(now, now, order.id);
@@ -710,14 +712,13 @@ class SHOficinaSync {
       comments: [],
     };
   }
-  // Testa conexão com o MDB usando a infraestrutura existente
+
   test(mdbPath, mdbPass) {
     const fs = require('fs');
     if (!mdbPath) return { success: false, error: 'Caminho do arquivo MDB não informado.' };
     if (!fs.existsSync(mdbPath)) return { success: false, error: `Arquivo não encontrado: ${mdbPath}` };
 
-    // Constrói script de teste com path/pass diretos (sem depender de env vars do módulo)
-    const testPass = mdbPass !== undefined ? mdbPass : process.env.SHOFICINA_PASS || '';
+    const testPass = mdbPass !== undefined ? mdbPass : getMdbPass();
     const body = `
 $cmd = $conn.CreateCommand()
 $cmd.CommandText = 'SELECT TOP 1 CODIGO FROM [CLIENTES]'
@@ -749,7 +750,6 @@ $conn.Close()
       runPS1(script);
       return { success: true, message: 'Conexão com o banco MDB realizada com sucesso!' };
     } catch (err) {
-      // err.message já contém o erro real do PowerShell (vem do runPS1 melhorado)
       const msg = err.message || 'Erro desconhecido ao conectar ao banco MDB';
       return { success: false, error: msg };
     }

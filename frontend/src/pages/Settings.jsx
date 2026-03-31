@@ -22,10 +22,11 @@ export default function Settings() {
   const [testMsg, setTestMsg]           = useState('');
   const fileInputRef = useRef(null);
 
-  // ─── Reset state ───
-  const [resetLoading, setResetLoading]     = useState(false);
+  // ─── Reset / cutoff state ───
+  const [resetLoading, setResetLoading]         = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [cutoffDate, setCutoffDate]         = useState('2026-03-18'); // data de corte
+  // Padrão: 01/01/2026
+  const [cutoffDate, setCutoffDate] = useState('2026-01-01');
 
   // ─── General settings ───
   const [settings, setSettings] = useState({
@@ -41,33 +42,34 @@ export default function Settings() {
   });
   const [loading, setLoading] = useState(false);
 
-  // Load current SHOficina config on mount
+  // Carrega configurações atuais do SHOficina ao montar
   useEffect(() => {
     api.settings.getShoficina()
       .then(data => {
         setMdbPath(data.path || '');
+        // Carrega cutoff salvo no banco; se não houver, mantém o padrão 2026-01-01
         if (data.cutoff) setCutoffDate(data.cutoff);
       })
       .catch(() => {});
   }, []);
 
-  // ─── File picker (Electron gives full path via file.path) ───
+  // ─── File picker (Electron expõe file.path com o caminho completo) ───
   const handleFilePick = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    // In Electron, file.path gives the full OS path
     const fullPath = file.path || file.name;
     setMdbPath(fullPath);
     setTestStatus(null);
   };
 
-  // ─── Test connection ───
+  // ─── Testar conexão ───
   const handleTest = async () => {
     if (!mdbPath) { toast.error('Informe o caminho do arquivo .mdb'); return; }
     setShoficinaLoading(true);
     setTestStatus(null);
     try {
-      const result = await api.settings.testShoficina({ path: mdbPath, password: mdbPass });
+      // Backend espera o campo "pass", não "password"
+      const result = await api.settings.testShoficina({ path: mdbPath, pass: mdbPass });
       setTestStatus('ok');
       setTestMsg(result.message || 'Conexão estabelecida com sucesso!');
       toast.success(result.message || 'Conexão OK!');
@@ -80,13 +82,14 @@ export default function Settings() {
     }
   };
 
-  // ─── Save SHOficina config ───
+  // ─── Salvar configuração SHOficina ───
   const handleSaveShoficina = async () => {
     if (!mdbPath) { toast.error('Informe o caminho do arquivo .mdb'); return; }
     setShoficinaLoading(true);
     try {
+      // Backend espera: { path, pass, cutoff }
       const body = { path: mdbPath, cutoff: cutoffDate };
-      if (mdbPass) body.password = mdbPass;
+      if (mdbPass) body.pass = mdbPass;   // ← "pass", não "password"
       await api.settings.saveShoficina(body);
       toast.success('Configuração do SHOficina salva! Sincronização reiniciada.');
       setTestStatus(null);
@@ -97,7 +100,7 @@ export default function Settings() {
     }
   };
 
-  // ─── Reset data ───
+  // ─── Resetar dados ───
   const handleReset = async () => {
     setResetLoading(true);
     try {
@@ -111,7 +114,7 @@ export default function Settings() {
     }
   };
 
-  // ─── General save (simulated) ───
+  // ─── Salvar config geral (simulado) ───
   const handleSave = async () => {
     setLoading(true);
     try {
@@ -190,7 +193,7 @@ export default function Settings() {
                     >
                       <FolderOpen className="w-4 h-4" />
                     </Button>
-                    {/* Hidden file input – Electron exposes file.path */}
+                    {/* Hidden file input – Electron expõe file.path */}
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -230,6 +233,24 @@ export default function Settings() {
                   </div>
                   <p className="text-xs text-slate-500">
                     Deixe em branco para manter a senha já configurada.
+                  </p>
+                </div>
+
+                <Separator />
+
+                {/* Data de corte da importação */}
+                <div className="space-y-2">
+                  <Label htmlFor="cutoffDateSync">Importar OS a partir de</Label>
+                  <Input
+                    id="cutoffDateSync"
+                    type="date"
+                    value={cutoffDate}
+                    onChange={(e) => { setCutoffDate(e.target.value); setTestStatus(null); }}
+                    className="w-48"
+                  />
+                  <p className="text-xs text-slate-500">
+                    Apenas OS criadas a partir desta data serão importadas do SHOficina.
+                    Padrão: 01/01/2026.
                   </p>
                 </div>
 
@@ -411,26 +432,20 @@ export default function Settings() {
                   Resetar Dados
                 </CardTitle>
                 <CardDescription>
-                  Remove todas as OS importadas do SHOficina e reinicia a sincronização do zero.
+                  Remove todas as OS importadas do SHOficina e reimporta do zero a partir da data configurada acima.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="space-y-2">
-                  <Label htmlFor="cutoffDate">Importar OS a partir de</Label>
-                  <Input
-                    id="cutoffDate"
-                    type="date"
-                    value={cutoffDate}
-                    onChange={(e) => setCutoffDate(e.target.value)}
-                    className="w-full"
-                  />
-                  <p className="text-xs text-slate-500">
-                    Apenas OS criadas a partir desta data serão importadas.
-                  </p>
+                <div className="p-3 bg-slate-50 border rounded-lg text-sm text-slate-600">
+                  <span className="font-medium">Data de corte atual: </span>
+                  {cutoffDate
+                    ? new Date(cutoffDate + 'T00:00:00').toLocaleDateString('pt-BR')
+                    : '01/01/2026'}
                 </div>
-                <Separator />
                 <p className="text-sm text-slate-600">
-                  Limpa os dados do app e reimporta a partir da data acima.
+                  A data de corte é compartilhada com a configuração do SHOficina acima.
+                  Altere lá e clique em <strong>Salvar e Reiniciar Sync</strong> para aplicar sem apagar os dados,
+                  ou use o botão abaixo para limpar tudo e reimportar.
                 </p>
                 {!showResetConfirm ? (
                   <Button
@@ -439,13 +454,13 @@ export default function Settings() {
                     onClick={() => setShowResetConfirm(true)}
                   >
                     <Trash2 className="w-4 h-4 mr-2" />
-                    Limpar Dados do App
+                    Limpar e Reimportar
                   </Button>
                 ) : (
                   <div className="space-y-2 p-3 bg-red-50 border border-red-200 rounded-lg">
                     <div className="flex items-center gap-2 text-red-800 text-sm font-medium">
                       <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                      Tem certeza? OS anteriores a {cutoffDate} serão removidas.
+                      Tem certeza? OS anteriores a {new Date(cutoffDate + 'T00:00:00').toLocaleDateString('pt-BR')} serão removidas.
                     </div>
                     <div className="flex gap-2">
                       <Button
