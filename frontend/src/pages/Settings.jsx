@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import {
   Settings as SettingsIcon, Save, Globe, Bell, Database,
-  Shield, FolderOpen, RefreshCw, CheckCircle2, XCircle, Eye, EyeOff
+  Shield, FolderOpen, RefreshCw, CheckCircle2, XCircle, Eye, EyeOff, Trash2, AlertTriangle
 } from "lucide-react";
 import { toast } from "sonner";
 import api from '@/api/client';
@@ -21,6 +21,11 @@ export default function Settings() {
   const [testStatus, setTestStatus]     = useState(null); // null | 'ok' | 'error'
   const [testMsg, setTestMsg]           = useState('');
   const fileInputRef = useRef(null);
+
+  // ─── Reset state ───
+  const [resetLoading, setResetLoading]     = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [cutoffDate, setCutoffDate]         = useState('2026-03-18'); // data de corte
 
   // ─── General settings ───
   const [settings, setSettings] = useState({
@@ -41,7 +46,7 @@ export default function Settings() {
     api.settings.getShoficina()
       .then(data => {
         setMdbPath(data.path || '');
-        // Password not returned from server for security
+        if (data.cutoff) setCutoffDate(data.cutoff);
       })
       .catch(() => {});
   }, []);
@@ -80,7 +85,7 @@ export default function Settings() {
     if (!mdbPath) { toast.error('Informe o caminho do arquivo .mdb'); return; }
     setShoficinaLoading(true);
     try {
-      const body = { path: mdbPath };
+      const body = { path: mdbPath, cutoff: cutoffDate };
       if (mdbPass) body.password = mdbPass;
       await api.settings.saveShoficina(body);
       toast.success('Configuração do SHOficina salva! Sincronização reiniciada.');
@@ -89,6 +94,20 @@ export default function Settings() {
       toast.error(err.message || 'Erro ao salvar');
     } finally {
       setShoficinaLoading(false);
+    }
+  };
+
+  // ─── Reset data ───
+  const handleReset = async () => {
+    setResetLoading(true);
+    try {
+      const result = await api.settings.resetData(cutoffDate);
+      toast.success(result.message || 'Dados resetados com sucesso!');
+      setShowResetConfirm(false);
+    } catch (err) {
+      toast.error(err.message || 'Erro ao resetar dados');
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -381,6 +400,78 @@ export default function Settings() {
                     onCheckedChange={(checked) => setSettings({...settings, requirePasswordChange: checked})}
                   />
                 </div>
+              </CardContent>
+            </Card>
+
+            {/* ── Reset ── */}
+            <Card className="border-red-200">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-red-700">
+                  <Trash2 className="w-5 h-5" />
+                  Resetar Dados
+                </CardTitle>
+                <CardDescription>
+                  Remove todas as OS importadas do SHOficina e reinicia a sincronização do zero.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="cutoffDate">Importar OS a partir de</Label>
+                  <Input
+                    id="cutoffDate"
+                    type="date"
+                    value={cutoffDate}
+                    onChange={(e) => setCutoffDate(e.target.value)}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-slate-500">
+                    Apenas OS criadas a partir desta data serão importadas.
+                  </p>
+                </div>
+                <Separator />
+                <p className="text-sm text-slate-600">
+                  Limpa os dados do app e reimporta a partir da data acima.
+                </p>
+                {!showResetConfirm ? (
+                  <Button
+                    variant="outline"
+                    className="w-full border-red-300 text-red-700 hover:bg-red-50"
+                    onClick={() => setShowResetConfirm(true)}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Limpar Dados do App
+                  </Button>
+                ) : (
+                  <div className="space-y-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <div className="flex items-center gap-2 text-red-800 text-sm font-medium">
+                      <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                      Tem certeza? OS anteriores a {cutoffDate} serão removidas.
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => setShowResetConfirm(false)}
+                        disabled={resetLoading}
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                        onClick={handleReset}
+                        disabled={resetLoading}
+                      >
+                        {resetLoading
+                          ? <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
+                          : <Trash2 className="w-3 h-3 mr-1" />
+                        }
+                        Confirmar Reset
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

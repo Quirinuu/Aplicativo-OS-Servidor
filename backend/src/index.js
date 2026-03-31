@@ -77,6 +77,9 @@ function initDatabase() {
 
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('synchronous = NORMAL');   // Mais rápido que FULL, seguro com WAL
+  db.pragma('cache_size = -32000');    // 32MB de cache em memória
+  db.pragma('temp_store = MEMORY');    // Tabelas temporárias em RAM
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -125,10 +128,12 @@ function initDatabase() {
 
   // Índices para acelerar queries mais comuns
   db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_orders_status    ON orders(currentStatus);
-    CREATE INDEX IF NOT EXISTS idx_orders_osNumber  ON orders(osNumber);
-    CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt);
-    CREATE INDEX IF NOT EXISTS idx_comments_osId    ON comments(osId);
+    CREATE INDEX IF NOT EXISTS idx_orders_status      ON orders(currentStatus);
+    CREATE INDEX IF NOT EXISTS idx_orders_osNumber    ON orders(osNumber);
+    CREATE INDEX IF NOT EXISTS idx_orders_createdAt   ON orders(createdAt);
+    CREATE INDEX IF NOT EXISTS idx_orders_status_date ON orders(currentStatus, createdAt);
+    CREATE INDEX IF NOT EXISTS idx_orders_optdesc     ON orders(optionalDescription);
+    CREATE INDEX IF NOT EXISTS idx_comments_osId      ON comments(osId);
   `);
 
   const userCount = db.prepare('SELECT COUNT(*) as n FROM users').get().n;
@@ -205,6 +210,11 @@ function getAllOrders(db, filters = {}) {
     WHERE 1=1
   `;
   const params = [];
+
+  // Por padrão, exclui COMPLETED do dashboard (histórico é separado)
+  if (!filters.includeCompleted && !filters.onlyCompleted && (!filters.status || filters.status === 'all')) {
+    sql += " AND o.currentStatus != 'COMPLETED'";
+  }
 
   if (filters.status && filters.status !== 'all') {
     sql += ' AND o.currentStatus = ?'; params.push(filters.status);
@@ -465,6 +475,8 @@ app.get('/api/os', authMiddleware, (req, res) => {
     clientName:    req.query.clientName,
     equipmentName: req.query.equipmentName,
   });
+  // Cache de 10s no cliente — reduz refetch desnecessário
+  res.setHeader('Cache-Control', 'private, max-age=10');
   res.json({ orders });
 });
 
@@ -645,6 +657,14 @@ app.put('/api/settings/shoficina', authMiddleware, (req, res) => {
       process.env.SHOFICINA_PASS = mdbPass;
     }
 
+    const { cutoff: mdbCutoff } = req.body;
+    if (mdbCutoff) {
+      db.prepare("INSERT INTO settings (key, value) VALUES ('import_cutoff', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(mdbCutoff);
+      process.env.SHOFICINA_CUTOFF = mdbCutoff;
+      shoSync.setCutoff(mdbCutoff); // atualiza em memória sem precisar reiniciar
+      console.log('⚙️  Cutoff atualizado:', mdbCutoff);
+    }
+
     // Reinicia o sync com os novos valores
     shoSync.stop();
     setTimeout(() => shoSync.start(), 500);
@@ -668,6 +688,49 @@ app.post('/api/settings/shoficina/test', authMiddleware, (req, res) => {
     res.json(result);
   } else {
     res.status(400).json(result);
+  }
+});
+
+// ============== ROTA DE RESET ==============
+
+app.delete('/api/settings/reset-data', authMiddleware, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores podem resetar os dados.' });
+  }
+  try {
+    const { cutoff } = req.body || {};
+
+    // Salva nova data de corte se fornecida
+    if (cutoff) {
+      db.prepare("INSERT INTO settings (key, value) VALUES ('import_cutoff', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(cutoff);
+      process.env.SHOFICINA_CUTOFF = cutoff;
+      shoSync.setCutoff(cutoff); // atualiza em memória imediatamente
+      console.log(`⚙️  [Reset] Nova data de corte: ${cutoff}`);
+    }
+
+    // Remove todas as OS importadas do SHOficina
+    const osResult = db.prepare(
+      `DELETE FROM orders WHERE optionalDescription LIKE '%[shoficina:%]%'`
+    ).run();
+
+    // Remove comentários órfãos
+    db.prepare(`DELETE FROM comments WHERE osId NOT IN (SELECT id FROM orders)`).run();
+
+    // Reinicia o sync — vai reimportar a partir da nova data de corte
+    shoSync.stop();
+    setTimeout(() => shoSync.start(), 500);
+
+    const cutoffMsg = cutoff ? ` a partir de ${cutoff}` : '';
+    console.log(`🧹 [Reset] ${osResult.changes} OS removidas. Reimportando${cutoffMsg}.`);
+    res.json({
+      success: true,
+      deleted: osResult.changes,
+      cutoff: cutoff || process.env.SHOFICINA_CUTOFF,
+      message: `${osResult.changes} OS removidas. Reimportando${cutoffMsg}.`
+    });
+  } catch (err) {
+    console.error('❌ [Reset] Erro:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

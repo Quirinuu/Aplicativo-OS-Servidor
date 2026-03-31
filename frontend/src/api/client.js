@@ -91,6 +91,7 @@ export const serviceOrders = {
 
 export const settings = {
   getShoficina: async () => fetchAPI('/settings/shoficina'),
+  resetData: async (cutoff) => fetchAPI('/settings/reset-data', { method: 'DELETE', body: JSON.stringify({ cutoff }) }),
   saveShoficina: async (data) => fetchAPI('/settings/shoficina', {
     method: 'PUT',
     body: JSON.stringify(data),
