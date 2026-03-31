@@ -241,7 +241,7 @@ function getAllOrders(db, filters = {}) {
     sql += ' AND o.createdAt <= ?'; params.push(filters.endDate);
   }
 
-  sql += ' ORDER BY o.createdAt ASC';
+  sql += ' ORDER BY o.createdAt DESC';
 
   const rows = db.prepare(sql).all(...params);
 
